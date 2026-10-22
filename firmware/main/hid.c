@@ -49,7 +49,10 @@ void hid_release(void) {
     }
 }
 static void callback(void *arg,esp_event_base_t base,int32_t id,void *data) {
-    if(id==ESP_HIDD_START_EVENT) esp_hid_ble_gap_adv_start();
+    if(id==ESP_HIDD_START_EVENT) {
+        ESP_ERROR_CHECK(ble_svc_gap_device_name_set(config.device_name));
+        esp_hid_ble_gap_adv_start();
+    }
     else if(id==ESP_HIDD_CONNECT_EVENT) {connected=true; secured=false;}
     else if(id==ESP_HIDD_DISCONNECT_EVENT) {
         connected=false; secured=false; buttons=0; esp_hid_ble_gap_adv_start();
@@ -61,7 +64,6 @@ void hid_init(void) {
     ESP_ERROR_CHECK(esp_hid_gap_init(HIDD_BLE_MODE));
     ESP_ERROR_CHECK(esp_hid_ble_gap_adv_init(ESP_HID_APPEARANCE_GENERIC,config.device_name));
     ESP_ERROR_CHECK(esp_hidd_dev_init(&config,ESP_HID_TRANSPORT_BLE,callback,&device));
-    ESP_ERROR_CHECK(ble_svc_gap_device_name_set(config.device_name));
     ble_store_config_init(); ble_hs_cfg.store_status_cb=ble_store_util_status_rr;
     ESP_ERROR_CHECK(esp_nimble_enable(host));
 }
