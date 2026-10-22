@@ -150,6 +150,67 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         await new.send(Kind.PING, payload=b"new-session")
         self.assertEqual(await self.receive(new), (Kind.PONG, 0, b"new-session"))
 
+    async def test_inflight_data_after_close_keeps_tunnel_alive(self):
+        peer = await self.connect()
+        await self.receive(peer)
+        await peer.send(Kind.OPEN, 1, {"listener": 1, "peer": "192.0.2.3", "port": 40000})
+        await self.receive(peer)
+        await peer.send(Kind.CLOSE, 1)
+        await self.receive(peer)
+        await peer.send(Kind.DATA, 1, b"already in flight")
+        await peer.send(Kind.PING, payload=b"still alive")
+        self.assertEqual(await self.receive(peer), (Kind.PONG, 0, b"still alive"))
+        await peer.send(Kind.DATA, 99, b"never opened")
+        self.assertEqual(await asyncio.wait_for(peer.reader.read(), 2), b"")
+
+    async def test_burst_video_does_not_starve_loopback_writer(self):
+        payload = os.urandom(1024 * 1024)
+        completed = asyncio.get_running_loop().create_future()
+        async def sink(reader, writer):
+            try:
+                received = await reader.readexactly(len(payload))
+                completed.set_result(hashlib.sha256(received).digest())
+            except Exception as exc:
+                if not completed.done(): completed.set_exception(exc)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        server = await asyncio.start_server(sink, '127.0.0.1', 0)
+        try:
+            self.backend.echo = False
+            self.config['listeners'][0]['upstream'] = server.sockets[0].getsockname()[1]
+            peer = await self.connect()
+            await self.receive(peer)
+            await peer.send(Kind.OPEN, 1, {"listener": 1, "peer": "192.0.2.3", "port": 40000})
+            await self.receive(peer)
+            for offset in range(0, len(payload), MAX_PAYLOAD):
+                await peer.send(Kind.DATA, 1, payload[offset:offset + MAX_PAYLOAD])
+            self.assertEqual(await asyncio.wait_for(completed, 5), hashlib.sha256(payload).digest())
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_info_probe_close_does_not_close_active_mirror(self):
+        peer = await self.connect()
+        await self.receive(peer)
+        for channel in (1, 2, 3):
+            await peer.send(Kind.OPEN, channel, {"listener": 1, "peer": "192.0.2.3", "port": 40000+channel})
+            await self.receive(peer)
+        session = self.backend.session
+        session.channels[1].update(peer='192.0.2.3', parser=Parser(), owns_media=True)
+        session.channels[2].update(peer='192.0.2.3')
+        session.channels[3].update(peer='192.0.2.3', parser=Parser())
+        await peer.send(Kind.CLOSE, 3)
+        self.assertEqual((await self.receive(peer))[:2], (Kind.CLOSE, 3))
+        await peer.send(Kind.DATA, 2, b'video after info probe')
+        self.assertEqual(await self.receive(peer), (Kind.DATA, 2, b'video after info probe'))
+        self.assertIn(1, session.channels)
+        await peer.send(Kind.CLOSE, 1)
+        # Closing the actual SETUP owner still releases its media channels.
+        replies = [await self.receive(peer), await self.receive(peer)]
+        self.assertEqual({(r[0],r[1]) for r in replies}, {(Kind.CLOSE,1),(Kind.CLOSE,2)})
+        self.assertFalse(session.channels)
+
     async def test_frame_api_requires_auth_and_rejects_stale_images(self):
         with tempfile.TemporaryDirectory() as directory:
             file = Path(directory) / "frame.jpg"

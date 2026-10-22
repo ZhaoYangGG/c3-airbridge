@@ -6,6 +6,7 @@ encrypted. Never expose this listener directly to the public Internet.
 import argparse
 import asyncio
 import contextlib
+from collections import deque
 import hmac
 import ipaddress
 import json
@@ -46,6 +47,7 @@ class Session:
         self.peer, self.services, self.echo = peer, services, echo
         self.channels = {}
         self.opening = set()
+        self.closed = deque(maxlen=MAX_CHANNELS * 2)
         self.tasks = set()
         self.reverse = {}
         self.acks = {}
@@ -142,6 +144,8 @@ class Session:
         service = next((s for s in self.services if s["id"] == meta["listener"]), None)
         if service is None:
             raise ValueError("unknown listener")
+        if channel in self.closed:
+            self.closed.remove(channel)
         peer_ip = str(ipaddress.IPv4Address(meta["peer"]))
         if self.echo:
             self.channels[channel] = {"echo": True}
@@ -177,6 +181,8 @@ class Session:
                     return
                 if state["parser"]:
                     for message in state["parser"].feed(data):
+                        if message.start.startswith("SETUP "):
+                            state["owns_media"] = True
                         state["writer"].write(await self.control_request(message, state["peer"]))
                         await asyncio.wait_for(state["writer"].drain(), 10)
                 else:
@@ -207,6 +213,8 @@ class Session:
     def close_channel(self, channel):
         state = self.channels.pop(channel, None)
         if state:
+            if channel not in self.closed:
+                self.closed.append(channel)
             for task in state.get("tasks", []):
                 if task is not asyncio.current_task():
                     task.cancel()
@@ -214,7 +222,7 @@ class Session:
                 state["writer"].close()
             if "transport" in state:
                 state["transport"].close()
-            if state.get("parser") and not self.stopping:
+            if state.get("owns_media") and not self.stopping:
                 # An AirPlay control connection owns its timing/audio/video
                 # channels. Release them when that control session ends.
                 for other, value in list(self.channels.items()):
@@ -247,6 +255,11 @@ class Session:
                 elif kind == Kind.DATA:
                     state = self.channels.get(channel)
                     if state is None:
+                        # CLOSE and DATA travel in opposite directions. Bytes
+                        # already in flight for a recently closed channel are
+                        # harmless; an entirely unknown channel is still bad.
+                        if channel in self.closed:
+                            continue
                         raise ValueError("data on unknown channel")
                     self.bytes_up += len(payload)
                     if state.get("echo"):
@@ -261,6 +274,9 @@ class Session:
                     else:
                         try:
                             state["queue"].put_nowait(payload)
+                            # Buffered tunnel reads may otherwise monopolize
+                            # the loop and overflow even a fast loopback sink.
+                            await asyncio.sleep(0)
                         except asyncio.QueueFull:
                             # Fail boundedly rather than deadlock ACK delivery.
                             await self.peer.send(Kind.CLOSE, channel)

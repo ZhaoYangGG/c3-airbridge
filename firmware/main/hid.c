@@ -5,6 +5,7 @@
 #include "esp_hid_gap.h"
 #include "host/ble_hs.h"
 #include "services/gap/ble_svc_gap.h"
+#include "services/hid/ble_svc_hid.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "freertos/FreeRTOS.h"
@@ -14,6 +15,13 @@ static esp_hidd_dev_t *device;
 static volatile bool connected;
 static volatile bool secured;
 static uint8_t buttons;
+// ESP-IDF 6.0.1 supplies the Battery *service* UUID (0x180f) here.
+// HOGP's External Report Reference must point to a characteristic UUID.
+int __real_ble_svc_hid_add(struct ble_svc_hid_params params);
+int __wrap_ble_svc_hid_add(struct ble_svc_hid_params params) {
+    params.external_rpt_ref=0x2a19; // Battery Level characteristic in SDK BAS.
+    return __real_ble_svc_hid_add(params);
+}
 // The CC0 ESP-IDF GAP helper calls this after encryption. This project only
 // sends input on explicit authenticated commands, never a demo on pairing.
 void ble_hid_task_start_up(void) {secured=true;}
@@ -51,6 +59,7 @@ void hid_release(void) {
 static void callback(void *arg,esp_event_base_t base,int32_t id,void *data) {
     if(id==ESP_HIDD_START_EVENT) {
         ESP_ERROR_CHECK(ble_svc_gap_device_name_set(config.device_name));
+        ESP_ERROR_CHECK(ble_svc_gap_device_appearance_set(ESP_HID_APPEARANCE_KEYBOARD));
         esp_hid_ble_gap_adv_start();
     }
     else if(id==ESP_HIDD_CONNECT_EVENT) {connected=true; secured=false;}
@@ -62,7 +71,7 @@ static void host(void *arg) {nimble_port_run(); nimble_port_freertos_deinit();}
 void ble_store_config_init(void);
 void hid_init(void) {
     ESP_ERROR_CHECK(esp_hid_gap_init(HIDD_BLE_MODE));
-    ESP_ERROR_CHECK(esp_hid_ble_gap_adv_init(ESP_HID_APPEARANCE_GENERIC,config.device_name));
+    ESP_ERROR_CHECK(esp_hid_ble_gap_adv_init(ESP_HID_APPEARANCE_KEYBOARD,config.device_name));
     ESP_ERROR_CHECK(esp_hidd_dev_init(&config,ESP_HID_TRANSPORT_BLE,callback,&device));
     ble_store_config_init(); ble_hs_cfg.store_status_cb=ble_store_util_status_rr;
     ESP_ERROR_CHECK(esp_nimble_enable(host));
@@ -97,7 +106,7 @@ bool hid_command(cJSON *o) {
         if(cJSON_HasObjectItem(o,"modifiers")&&!number(o,"modifiers",&mod,0,255))return false;
         uint8_t data[8]={(uint8_t)mod,0,(uint8_t)usage};
         bool ok=esp_hidd_dev_input_set(device,0,2,data,sizeof(data))==ESP_OK;
-        vTaskDelay(pdMS_TO_TICKS(20)); memset(data,0,sizeof(data));
+        vTaskDelay(pdMS_TO_TICKS(50)); memset(data,0,sizeof(data));
         return esp_hidd_dev_input_set(device,0,2,data,sizeof(data))==ESP_OK&&ok;
     }
     return false;
