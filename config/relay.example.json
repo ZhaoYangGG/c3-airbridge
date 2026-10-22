@@ -1,0 +1,10 @@
+{
+  "listeners": [
+    {"id": 1, "proto": "tcp", "port": 7000, "upstream": 17000, "control": true},
+    {"id": 2, "proto": "tcp", "port": 7100, "upstream": 17100},
+    {"id": 3, "proto": "udp", "port": 6000, "upstream": 16000},
+    {"id": 4, "proto": "udp", "port": 6001, "upstream": 16001},
+    {"id": 5, "proto": "udp", "port": 6002, "upstream": 16002}
+  ],
+  "mdns": []
+}

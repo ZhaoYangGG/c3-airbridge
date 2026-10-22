@@ -1,0 +1,126 @@
+# C3 AirBridge
+
+**用 ESP32-C3 做 iPhone Agent 的网络中继与蓝牙操作端。**
+
+实验项目。首版将 C3 限定为小缓冲 TCP/UDP 转发器，AirPlay 握手、解密和视频解码留在后端。**尚未声称真实 iPhone AirPlay 全链路成功**，进展以 [验证记录](docs/validation.md) 为准。
+
+## 架构
+
+```mermaid
+flowchart LR
+    I[iPhone] -->|AirPlay: Wi-Fi| C[ESP32-C3]
+    C -->|bounded multiplexed TCP tunnel| B[Mac / backend proxy]
+    B <-->|loopback TCP / UDP| U[UxPlay: protocol + decrypt + decode]
+    U -->|frames: adapter pending| A[Agent]
+    A -->|local authenticated HID API| B
+    B -->|commands| C
+    C -->|BLE HID| I
+```
+
+首轮拓扑：iPhone、C3、Mac 均连接同一个可互通的局域网。C3 主动连接 Mac；手机在“屏幕镜像”选择 **C3 AirBridge**。该入口的 A 记录指向 C3，不是绕过 C3 直连 Mac。C3 原样转发加密视频，不保存完整图像、不做视频解码、不运行模型。
+
+区别于普通 NAT：后端需要向手机发送时序包，因此这里使用有状态双向代理，在后端改写 SETUP 中的端口，并通过独立 UDP 通道回到手机。C3 每帧最多 4096 字节，最多 8 条数据通道和 6 个监听端口。控制消息的 plist 解析只发生在 Mac。
+
+## 当前范围
+
+| 部分 | 已实现 | 验证范围 |
+|---|---|---|
+| C3 固件 | ESP-IDF 6.0.1，Wi-Fi STA、USB 配网、TCP/UDP 中继、状态上报 | 见验证记录 |
+| 蓝牙输入 | 鼠标移动、点击、按住/释放、滚轮、原始键盘 usage | iPhone 配对/手势仍需实测 |
+| 后端 | 设备鉴权、有限队列、回压、通道限制、UDP 回程 | 本地协议/集成测试 |
+| AirPlay 适配 | 从真实 UxPlay 复制发现记录、SETUP 端口改写 | 合成协议测试；实机待验证 |
+| 视觉 Agent | 提供 HID API 接口 | 自动截帧/模型循环尚未接入 |
+| 远程云端 | 未提供加密公网隧道 | 当前只用于可信局域网 |
+
+## 安装与首轮实验
+
+需要 ESP32-C3（4 MB Flash）、数据线、2.4 GHz Wi-Fi、Python 3.11+、ESP-IDF **6.0.1**。iPhone 与 Mac 允许在局域网互通。供电方式不影响协议设计。
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+### 1. 备份与烧录
+
+**烧录会替换 MicroPython 和板上应用。先将完整 Flash 读出到仓库以外的私有路径。备份可能包含凭据，不要提交。**
+
+```bash
+# 激活本机 ESP-IDF 6.0.1 环境后：
+python -m esptool --port PORT read-flash 0 ALL /private/path/original-flash.bin
+cd firmware
+idf.py set-target esp32c3
+idf.py build
+idf.py -p PORT flash
+```
+
+无需整片擦除。恢复原状态：在确认芯片和串口后，将自己的完整备份写回偏移 `0`。不要使用其他开发板的备份。
+
+### 2. 先测转发链路
+
+```bash
+# 生成本机 token，Wi-Fi 密码通过交互输入，不会写进代码：
+.venv/bin/c3-provision --port PORT --host MAC_LAN_IPV4
+# 另开终端：
+.venv/bin/c3-airbridge --host MAC_LAN_IPV4 --echo
+```
+
+也可以使用本机配置页：
+
+```bash
+.venv/bin/c3-provision --port PORT --host MAC_LAN_IPV4 --web
+```
+
+打开它输出的 `127.0.0.1` 随机路径，在本机填写 Wi-Fi。Wi-Fi 配置及 token 写入板子 NVS。token 保存在 `.local/token`，默认不提交。本实验固件没有配置 Flash/NVS 加密。
+
+使用 `scripts/hardware_probe.py --device DEVICE_LAN_IPV4` 通过 C3 的 7100 端口做二进制回环。**echo 模式不是 AirPlay 接收器。**
+
+### 3. 接入真实 AirPlay
+
+安装 [UxPlay](https://github.com/FDH2/UxPlay) 及 GStreamer，参照其官方平台说明。macOS 不一定有名为 `uxplay` 的 Homebrew formula；可用 `scripts/build_uxplay.sh` 从固定提交编译，需先安装 `gstreamer libplist openssl@3 pkgconf`。
+
+```bash
+# UxPlay：视频 TCP 17100，控制 TCP 17000；时序/音频 UDP 16000~16002
+uxplay -n C3-Upstream -p tcp 17100,17000,17001 -p udp 16000,16001,16002 -s 480x1040 -fps 5 -vsync no
+# 捕获这个真实接收器的 TXT/身份记录，供 C3 重新发布：
+.venv/bin/python -m airbridge.discover --name C3-Upstream
+# 停掉 echo 进程，启动实际代理：
+.venv/bin/c3-airbridge --host MAC_LAN_IPV4 --config .local/relay.json
+```
+
+C3 自动重连并更新监听与发现配置。iPhone 打开控制中心 → 屏幕镜像 → **C3 AirBridge**。选择 `C3-Upstream` 会直接连接 Mac，不算通过 C3 的实验。
+
+先验证发现，再验证配对/SETUP，再验证真实画面。后端遇到未映射端口或不支持的控制流会拒绝并记录错误，不会假装连接成功。它仍是实验适配，尤其需要观察时序回程、iOS 版本和丢包恢复。
+
+### 4. 蓝牙操作接口
+
+iPhone 配对 **C3 AirBridge**，打开“设置 → 辅助功能 → 触控 → 辅助触控”。如请求配对码，查看本机串口日志（不会提交日志）。
+
+后端只在 `127.0.0.1:8766` 提供管理 API，要求 `Authorization: Bearer TOKEN`：
+
+| 请求 | JSON |
+|---|---|
+| `GET /status` | 无 |
+| `POST /hid` | `{"op":"move","x":10,"y":0}` |
+| `POST /hid` | `{"op":"click"}` |
+| `POST /hid` | `{"op":"press"}` / `{"op":"release"}` |
+| `POST /hid` | `{"op":"scroll","wheel":-1}` |
+| `POST /hid` | `{"op":"key","usage":4,"modifiers":0}`（美式键盘 a） |
+
+每次移动限制 -127~127，Agent 可分步移动并通过画面校准。返回 `ok` 仅说明 HID 调用被接受，不证明屏幕已成功点中。未实现中文输入、多指触控或锁屏绕过。
+
+## 限制与后续
+
+- LAN 版隧道是带 token 的明文 TCP，不直接暴露公网。远端部署先实现 TLS/VPN/认证与连接恢复。
+- 第一版只支持一个设备、一个 iPhone，会话断开时释放输入状态；Wi-Fi 与 BLE 共享射频，实际带宽需测量。
+- 只处理现有 UxPlay 支持的 AirPlay 镜像控制形式，不承诺所有 AirPlay 版本；加密控制、chunked 控制消息不支持。
+- UDP 包最多 4096 字节，超出应拒绝/丢弃而非拼凑视频。没有将任意“视频包”直接交给模型的接口。
+- 暂不实现 C3 SoftAP、蜂窝回传、通用上网路由或独立电池电源电路。
+- 运行内存、持续吞吐、AirPlay 实机和 BLE 共存指标，是实验结论的必要条件。
+
+## 来源与许可
+
+项目受 **[ESP32 iPhone Agent by Henry Yuan](https://github.com/onehumanbeing/esp32-iphone-agent)** 启发。本仓库没有复制其 GPL AirPlay 实现；AirPlay 接收由单独安装运行的 UxPlay 提供。
+
+自编代码 MIT；两个 ESP-IDF GAP 帮助文件使用其原有 CC0/Unlicense 授权，见 [THIRD_PARTY.md](THIRD_PARTY.md)。

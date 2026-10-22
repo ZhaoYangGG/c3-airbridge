@@ -1,0 +1,24 @@
+name: checks
+on: [push, pull_request]
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -e .
+      - run: python -m unittest discover -s tests -v
+  firmware:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.0.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ESP32-C3
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          cd firmware
+          idf.py set-target esp32c3
+          idf.py build

@@ -1,0 +1,155 @@
+import asyncio
+import hashlib
+import json
+import os
+import plistlib
+import unittest
+
+from airbridge.protocol import HEADER, Kind, MAX_PAYLOAD, Peer, encode, read_frame
+from airbridge.rtsp import Message, Parser, rewrite_ports, MAX_BODY
+from airbridge.server import Backend, DatagramQueue
+
+
+class FramingTests(unittest.TestCase):
+    def test_limit(self):
+        with self.assertRaises(ValueError):
+            encode(Kind.DATA, 1, b"x" * (MAX_PAYLOAD + 1))
+
+    def test_fragmented_binary_plist_and_pipelining(self):
+        body = plistlib.dumps({"timingPort": 12345}, fmt=plistlib.FMT_BINARY)
+        first = Message("SETUP rtsp://phone RTSP/1.0", [("CSeq", "1")], body)
+        second = Message("OPTIONS * RTSP/1.0", [], b"")
+        parser = Parser()
+        result = []
+        for byte in first.pack() + second.pack():
+            result.extend(parser.feed(bytes([byte])))
+        self.assertEqual(len(result), 2)
+        self.assertEqual(plistlib.loads(result[0].body)["timingPort"], 12345)
+        self.assertFalse(parser.buffer)
+
+    def test_reject_bad_control_lengths(self):
+        for header in (f"Content-Length: {MAX_BODY + 1}", "Content-Length: -1",
+                       "Content-Length: 1\r\nContent-Length: 2", "Transfer-Encoding: chunked"):
+            with self.subTest(header=header), self.assertRaises(ValueError):
+                Parser().feed(f"POST / RTSP/1.0\r\n{header}\r\n\r\n".encode())
+
+    def test_map_plist_structure_without_touching_keys(self):
+        original = {"timingPort": 16000, "streams": [{"type": 110, "dataPort": 17100}],
+                    "ekey": bytes(range(64)), "opaque": "17100"}
+        result = plistlib.loads(rewrite_ports(plistlib.dumps(original, fmt=plistlib.FMT_BINARY),
+            lambda key, value, kind: 7100 if kind == 110 else 6000))
+        self.assertEqual(result["streams"][0]["dataPort"], 7100)
+        self.assertEqual(result["timingPort"], 6000)
+        self.assertEqual(result["ekey"], original["ekey"])
+        self.assertEqual(result["opaque"], "17100")
+
+
+class TransportTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.token = "test-token-" + "x" * 32
+        self.config = {"listeners": [{"id": 1, "proto": "tcp", "port": 7000, "upstream": 17000}], "mdns": []}
+        self.backend = Backend(self.token, self.config, echo=True)
+        self.server = await asyncio.start_server(self.backend.accept, "127.0.0.1", 0)
+        self.port = self.server.sockets[0].getsockname()[1]
+        self.writers = []
+
+    async def asyncTearDown(self):
+        for writer in self.writers:
+            writer.close()
+            await writer.wait_closed()
+        self.server.close()
+        await self.server.wait_closed()
+        for _ in range(50):
+            if self.backend.session is None:
+                break
+            await asyncio.sleep(0.01)
+
+    async def connect(self, token=None):
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        self.writers.append(writer)
+        peer = Peer(reader, writer)
+        await peer.send(Kind.HELLO, payload={"device": "simulator", "token": token or self.token})
+        return peer
+
+    async def receive(self, peer):
+        return await asyncio.wait_for(read_frame(peer.reader), 2)
+
+    async def test_authentication(self):
+        peer = await self.connect("wrong")
+        self.assertEqual(await asyncio.wait_for(peer.reader.read(), 2), b"")
+        self.assertIsNone(self.backend.session)
+
+    async def test_oversized_frame_disconnects_before_payload(self):
+        peer = await self.connect()
+        await self.receive(peer)
+        peer.writer.write(HEADER.pack(1, Kind.DATA, 1, MAX_PAYLOAD + 1))
+        await peer.writer.drain()
+        self.assertEqual(await asyncio.wait_for(peer.reader.read(), 2), b"")
+
+    async def test_megabyte_opaque_stream_and_heartbeat(self):
+        peer = await self.connect()
+        self.assertEqual((await self.receive(peer))[0], Kind.CONFIG)
+        await peer.send(Kind.OPEN, 1, {"listener": 1, "peer": "192.0.2.3", "port": 40000})
+        self.assertTrue(json.loads((await self.receive(peer))[2])["ok"])
+        sent, received = hashlib.sha256(), hashlib.sha256()
+        for i in range(256):
+            payload = os.urandom(MAX_PAYLOAD)
+            sent.update(payload)
+            await peer.send(Kind.DATA, 1, payload)
+            kind, channel, data = await self.receive(peer)
+            self.assertEqual((kind, channel), (Kind.DATA, 1))
+            received.update(data)
+        await peer.send(Kind.PING, payload=b"alive")
+        self.assertEqual(await self.receive(peer), (Kind.PONG, 0, b"alive"))
+        self.assertEqual(sent.digest(), received.digest())
+        self.assertEqual(self.backend.session.bytes_up, 1048576)
+        self.assertEqual(self.backend.session.bytes_down, 1048576)
+
+    async def test_eight_channels_and_ninth_rejected(self):
+        peer = await self.connect()
+        await self.receive(peer)
+        for channel in range(1, 9):
+            await peer.send(Kind.OPEN, channel, {"listener": 1, "peer": "192.0.2.3", "port": 40000})
+            self.assertTrue(json.loads((await self.receive(peer))[2])["ok"])
+        await peer.send(Kind.OPEN, 9, {"listener": 1, "peer": "192.0.2.3", "port": 40000})
+        self.assertFalse(json.loads((await self.receive(peer))[2])["ok"])
+        self.assertEqual((await self.receive(peer))[:2], (Kind.CLOSE, 9))
+        self.assertEqual(len(self.backend.session.channels), 8)
+
+    async def test_rtsp_reply_port_mapping(self):
+        peer = await self.connect()
+        await self.receive(peer)
+        session = self.backend.session
+        session.services += [{"id": 2, "proto": "tcp", "port": 7100, "upstream": 17100},
+                             {"id": 3, "proto": "udp", "port": 6000, "upstream": 16000}]
+        message = Message("RTSP/1.0 200 OK", [], plistlib.dumps({
+            "timingPort": 16000, "eventPort": 0, "streams": [{"type": 110, "dataPort": 17100}]},
+            fmt=plistlib.FMT_BINARY))
+        result = Parser().feed(session.control_response(message))[0]
+        body = plistlib.loads(result.body)
+        self.assertEqual(body["timingPort"], 6000)
+        self.assertEqual(body["streams"][0]["dataPort"], 7100)
+
+    async def test_reverse_timing_datagrams(self):
+        peer = await self.connect()
+        await self.receive(peer)
+        task = asyncio.create_task(self.backend.session.reverse_udp("192.0.2.3", 5555))
+        kind, channel, payload = await self.receive(peer)
+        self.assertEqual(kind, Kind.UDP_OPEN)
+        self.assertEqual(json.loads(payload)["port"], 5555)
+        await peer.send(Kind.ACK, channel, {"ok": True})
+        mapped_port = await task
+        transport, protocol = await asyncio.get_running_loop().create_datagram_endpoint(
+            DatagramQueue, remote_addr=("127.0.0.1", mapped_port))
+        try:
+            transport.sendto(b"timing-request")
+            self.assertEqual(await self.receive(peer), (Kind.DATA, channel, b"timing-request"))
+            await peer.send(Kind.DATA, channel, b"timing-response")
+            data, _ = await asyncio.wait_for(protocol.queue.get(), 2)
+            self.assertEqual(data, b"timing-response")
+        finally:
+            transport.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

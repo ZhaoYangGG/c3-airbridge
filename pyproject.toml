@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "c3-airbridge"
+version = "0.1.0"
+description = "Experimental bounded-memory ESP32-C3 relay for iPhone agents"
+requires-python = ">=3.11"
+dependencies = ["zeroconf>=0.145,<1", "pyserial>=3.5,<4"]
+
+[project.scripts]
+c3-airbridge = "airbridge.server:main"
+c3-provision = "airbridge.provision:main"
+
+[tool.setuptools.packages.find]
+where = ["backend"]
