@@ -18,5 +18,10 @@ if [[ "$(uname -s)" == Darwin ]] && command -v brew >/dev/null; then
   export GST_PLUGIN_PATH="$plugins"
   export GST_REGISTRY="$PWD/.local/gst-registry.bin"
 fi
-exec "$binary" -n C3-Upstream -p tcp 17100,17000,17001 -p udp 16000,16001,16002 \
+# The patched macOS DNS-SD backend advertises locally, preventing the iPhone
+# from merging the upstream and C3 services and bypassing the C3 over IPv6.
+if [[ "$(uname -s)" == Darwin ]]; then
+  export C3_AIRBRIDGE_LOCAL_DNSSD="${C3_AIRBRIDGE_LOCAL_DNSSD:-1}"
+fi
+exec "$binary" -n C3-Upstream -nh -key .local/uxplay.pem -p tcp 17100,17000,17001 -p udp 16000,16001,16002 \
   -s 480x1040 -fps 5 -vsync no -vs fakesink -as fakesink "$@"

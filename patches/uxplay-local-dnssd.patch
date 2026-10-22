@@ -1,0 +1,28 @@
+diff --git a/lib/dns_sd/dns_sd.c b/lib/dns_sd/dns_sd.c
+index 24cdb80..3ffe2dd 100644
+--- a/lib/dns_sd/dns_sd.c
++++ b/lib/dns_sd/dns_sd.c
+@@ -241,7 +241,10 @@ dnssd_register_raop(dnssd_t *dnssd_public, unsigned short port)
+     assert(dnssd_public->dnssd_private);
+     dnssd_private_t *dnssd = (dnssd_private_t *) dnssd_public->dnssd_private;
+     DNSServiceFlags flags = 0;
+-    uint32_t interface_index = 0;
++    /* AirBridge: publish only to the local host when requested. */
++    const char *airbridge_local = getenv("C3_AIRBRIDGE_LOCAL_DNSSD");
++    uint32_t interface_index = airbridge_local && !strcmp(airbridge_local, "1")
++        ? (uint32_t) -1 : 0;
+ 
+ #if defined(__APPLE__) && defined(UXPLAY_HAVE_APPLE_P2P)
+     /* p2p support (macOS only) 
+@@ -329,7 +332,10 @@ dnssd_register_airplay(dnssd_t *dnssd_public, unsigned short port)
+     assert(dnssd_public->dnssd_private);
+     dnssd_private_t *dnssd = (dnssd_private_t *) dnssd_public->dnssd_private;    
+     DNSServiceFlags flags = 0;
+-    uint32_t interface_index = 0;
++    /* AirBridge: publish only to the local host when requested. */
++    const char *airbridge_local = getenv("C3_AIRBRIDGE_LOCAL_DNSSD");
++    uint32_t interface_index = airbridge_local && !strcmp(airbridge_local, "1")
++        ? (uint32_t) -1 : 0;
+ 
+ #if defined(__APPLE__) && defined(UXPLAY_HAVE_APPLE_P2P)
+     /* p2p support (macOS only) 

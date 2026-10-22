@@ -4,6 +4,7 @@
 #include "esp_hidd.h"
 #include "esp_hid_gap.h"
 #include "host/ble_hs.h"
+#include "services/gap/ble_svc_gap.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "freertos/FreeRTOS.h"
@@ -11,10 +12,11 @@
 
 static esp_hidd_dev_t *device;
 static volatile bool connected;
+static volatile bool secured;
 static uint8_t buttons;
 // The CC0 ESP-IDF GAP helper calls this after encryption. This project only
 // sends input on explicit authenticated commands, never a demo on pairing.
-void ble_hid_task_start_up(void) {}
+void ble_hid_task_start_up(void) {secured=true;}
 static const uint8_t reports[]={
     // Mouse, report 1: buttons, relative X/Y, wheel.
     0x05,0x01,0x09,0x02,0xa1,0x01,0x85,0x01,0x09,0x01,0xa1,0x00,
@@ -36,21 +38,21 @@ static esp_hid_device_config_t config={
 
 static bool mouse(int x,int y,int wheel) {
     uint8_t data[]={buttons,(uint8_t)x,(uint8_t)y,(uint8_t)wheel};
-    return connected && esp_hidd_dev_input_set(device,0,1,data,sizeof(data))==ESP_OK;
+    return connected && secured && esp_hidd_dev_input_set(device,0,1,data,sizeof(data))==ESP_OK;
 }
-bool hid_connected(void) {return connected;}
+bool hid_connected(void) {return connected && secured;}
 void hid_release(void) {
     buttons=0;
-    if(connected) {
+    if(connected && secured) {
         mouse(0,0,0);
         uint8_t keys[8]={0}; esp_hidd_dev_input_set(device,0,2,keys,sizeof(keys));
     }
 }
 static void callback(void *arg,esp_event_base_t base,int32_t id,void *data) {
     if(id==ESP_HIDD_START_EVENT) esp_hid_ble_gap_adv_start();
-    else if(id==ESP_HIDD_CONNECT_EVENT) connected=true;
+    else if(id==ESP_HIDD_CONNECT_EVENT) {connected=true; secured=false;}
     else if(id==ESP_HIDD_DISCONNECT_EVENT) {
-        connected=false; buttons=0; esp_hid_ble_gap_adv_start();
+        connected=false; secured=false; buttons=0; esp_hid_ble_gap_adv_start();
     }
 }
 static void host(void *arg) {nimble_port_run(); nimble_port_freertos_deinit();}
@@ -59,6 +61,7 @@ void hid_init(void) {
     ESP_ERROR_CHECK(esp_hid_gap_init(HIDD_BLE_MODE));
     ESP_ERROR_CHECK(esp_hid_ble_gap_adv_init(ESP_HID_APPEARANCE_GENERIC,config.device_name));
     ESP_ERROR_CHECK(esp_hidd_dev_init(&config,ESP_HID_TRANSPORT_BLE,callback,&device));
+    ESP_ERROR_CHECK(ble_svc_gap_device_name_set(config.device_name));
     ble_store_config_init(); ble_hs_cfg.store_status_cb=ble_store_util_status_rr;
     ESP_ERROR_CHECK(esp_nimble_enable(host));
 }
@@ -68,7 +71,7 @@ static bool number(cJSON *o,const char *key,int *out,int lo,int hi) {
     *out=v->valueint; return true;
 }
 bool hid_command(cJSON *o) {
-    if(!connected) return false;
+    if(!connected || !secured) return false;
     cJSON *op=cJSON_GetObjectItemCaseSensitive(o,"op");
     if(!cJSON_IsString(op)) return false;
     if(!strcmp(op->valuestring,"move")) {

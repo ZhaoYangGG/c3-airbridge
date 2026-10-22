@@ -816,6 +816,10 @@ nimble_hid_gap_event(struct ble_gap_event *event, void *arg)
         ESP_LOGI(TAG, "connection %s; status=%d",
                 event->connect.status == 0 ? "established" : "failed",
                 event->connect.status);
+        if (event->connect.status == 0) {
+            rc = ble_gap_security_initiate(event->connect.conn_handle);
+            ESP_LOGI(TAG, "HID security initiation: %d", rc);
+        }
         return 0;
         break;
     case BLE_GAP_EVENT_DISCONNECT:
@@ -858,7 +862,9 @@ nimble_hid_gap_event(struct ble_gap_event *event, void *arg)
                 event->enc_change.status);
         rc = ble_gap_conn_find(event->enc_change.conn_handle, &desc);
         assert(rc == 0);
-        ble_hid_task_start_up();
+        if (event->enc_change.status == 0 && desc.sec_state.encrypted && desc.sec_state.authenticated) {
+            ble_hid_task_start_up();
+        }
         return 0;
 
     case BLE_GAP_EVENT_NOTIFY_TX:

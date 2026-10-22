@@ -2,7 +2,7 @@
 
 **用 ESP32-C3 做 iPhone Agent 的网络中继与蓝牙操作端。**
 
-实验项目。首版将 C3 限定为小缓冲 TCP/UDP 转发器，AirPlay 握手、解密和视频解码留在后端。**尚未声称真实 iPhone AirPlay 全链路成功**，进展以 [验证记录](docs/validation.md) 为准。
+实验项目。首版将 C3 限定为小缓冲 TCP/UDP 转发器，AirPlay 握手、解密和视频解码留在后端。**已收到经真实 C3 转发的 iPhone 画面；手机输入和 Agent 闭环仍在验证中**，进展以 [验证记录](docs/validation.md) 为准。
 
 ## 架构
 
@@ -11,7 +11,7 @@ flowchart LR
     I[iPhone] -->|AirPlay: Wi-Fi| C[ESP32-C3]
     C -->|bounded multiplexed TCP tunnel| B[Mac / backend proxy]
     B <-->|loopback TCP / UDP| U[UxPlay: protocol + decrypt + decode]
-    U -->|frames: adapter pending| A[Agent]
+    U -->|JPEG / local authenticated frame API| A[Agent]
     A -->|local authenticated HID API| B
     B -->|commands| C
     C -->|BLE HID| I
@@ -28,7 +28,7 @@ flowchart LR
 | C3 固件 | ESP-IDF 6.0.1，Wi-Fi STA、USB 配网、TCP/UDP 中继、状态上报 | 见验证记录 |
 | 蓝牙输入 | 鼠标移动、点击、按住/释放、滚轮、原始键盘 usage | iPhone 配对/手势仍需实测 |
 | 后端 | 设备鉴权、有限队列、回压、通道限制、UDP 回程 | 本地协议/集成测试 |
-| AirPlay 适配 | 从真实 UxPlay 复制发现记录、SETUP 端口改写 | 合成协议测试；实机待验证 |
+| AirPlay 适配 | 从真实 UxPlay 复制发现记录、SETUP 端口改写 | 已收到 iPhone 经实板 C3 转发的画面 |
 | 视觉 Agent | 提供 HID API 与可选的最新 JPEG 接口 | 模型循环尚未接入 |
 | 远程云端 | 未提供加密公网隧道 | 当前只用于可信局域网 |
 
@@ -82,12 +82,14 @@ idf.py -p PORT flash
 安装 [UxPlay](https://github.com/FDH2/UxPlay) 及 GStreamer，参照其官方平台说明。macOS 不一定有名为 `uxplay` 的 Homebrew formula；可用 `scripts/build_uxplay.sh` 从固定提交编译，需先安装 `gstreamer libplist openssl@3 pkgconf`。
 
 ```bash
-# UxPlay：视频 TCP 17100，控制 TCP 17000；时序/音频 UDP 16000~16002
-uxplay -n C3-Upstream -p tcp 17100,17000,17001 -p udp 16000,16001,16002 -s 480x1040 -fps 5 -vsync no
-# 捕获这个真实接收器的 TXT/身份记录，供 C3 重新发布：
-.venv/bin/python -m airbridge.discover --name C3-Upstream
+# macOS：构建固定版本并应用本机 Bonjour 补丁
+bash scripts/build_uxplay.sh
+# 视频 TCP 17100，控制 TCP 17000；时序/音频 UDP 16000~16002
+bash scripts/run_uxplay.sh -vs 'jpegenc ! multifilesink location=.local/frame.jpg'
+# 另开终端，捕获真实接收器只对本机发布的 TXT/身份：
+.venv/bin/python -m airbridge.discover --local-only --name C3-Upstream
 # 停掉 echo 进程，启动实际代理：
-.venv/bin/c3-airbridge --host MAC_LAN_IPV4 --config .local/relay.json
+.venv/bin/c3-airbridge --host MAC_LAN_IPV4 --config .local/relay.json --frame-file .local/frame.jpg
 ```
 
 在 macOS 上可用 `scripts/run_uxplay.sh` 启动无窗口接收器，脚本隔离所需 GStreamer 插件，避免全局 gst-python 插件扫描挂起。要产生截图：
@@ -99,7 +101,7 @@ bash scripts/run_uxplay.sh -vs 'jpegenc ! multifilesink location=.local/frame.jp
 
 后端的 `GET /frame` 返回最近 5 秒内的完整 JPEG，需要同样的 Bearer token；不存在、未写完或过期的图片不会作为新观察返回。截图和录制仅保存在被忽略的 `.local/` 下。每次重启 UxPlay 后，应重新运行发现脚本并重启后端，以更新接收器身份。
 
-C3 自动重连并更新监听与发现配置。iPhone 打开控制中心 → 屏幕镜像 → **C3 AirBridge**。选择 `C3-Upstream` 会直接连接 Mac，不算通过 C3 的实验。
+C3 自动重连并更新监听与发现配置。iPhone 打开控制中心 → 屏幕镜像 → **C3 AirBridge**。macOS 必须使用补丁后的 UxPlay 和 `--local-only` 发现：如果 upstream 同时在局域网广播相同身份，iPhone 会合并入口，甚至经 IPv6 直接连接 Mac。验证时必须同时观察 C3 字节计数和 UxPlay 的 loopback 连接，不能仅凭菜单名称或看到画面判断经过 C3。Linux 的普通局域网发现不加 `--local-only`，其发现隔离尚未验证。
 
 先验证发现，再验证配对/SETUP，再验证真实画面。后端遇到未映射端口或不支持的控制流会拒绝并记录错误，不会假装连接成功。它仍是实验适配，尤其需要观察时序回程、iOS 版本和丢包恢复。
 
@@ -134,4 +136,4 @@ iPhone 配对 **C3 AirBridge**，打开“设置 → 辅助功能 → 触控 →
 
 项目受 **[ESP32 iPhone Agent by Henry Yuan](https://github.com/onehumanbeing/esp32-iphone-agent)** 启发。本仓库没有复制其 GPL AirPlay 实现；AirPlay 接收由单独安装运行的 UxPlay 提供。
 
-自编代码 MIT；两个 ESP-IDF GAP 帮助文件使用其原有 CC0/Unlicense 授权，见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+自编代码 MIT；两个 ESP-IDF GAP 帮助文件使用其原有 CC0/Unlicense 授权；UxPlay 补丁单独采用 GPL-3.0，见 [THIRD_PARTY.md](THIRD_PARTY.md)。
