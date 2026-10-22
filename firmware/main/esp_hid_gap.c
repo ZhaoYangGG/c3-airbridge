@@ -926,8 +926,9 @@ esp_err_t esp_hid_ble_gap_adv_start(void)
 {
     int rc;
     struct ble_gap_adv_params adv_params;
-    /* maximum possible duration for hid device(180s) */
-    int32_t adv_duration_ms = 180000;
+    /* AirBridge provisioning may take longer than three minutes. Keep the
+     * experimental device discoverable until the phone connects. */
+    int32_t adv_duration_ms = BLE_HS_FOREVER;
 
     rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {

@@ -29,7 +29,7 @@ flowchart LR
 | 蓝牙输入 | 鼠标移动、点击、按住/释放、滚轮、原始键盘 usage | iPhone 配对/手势仍需实测 |
 | 后端 | 设备鉴权、有限队列、回压、通道限制、UDP 回程 | 本地协议/集成测试 |
 | AirPlay 适配 | 从真实 UxPlay 复制发现记录、SETUP 端口改写 | 合成协议测试；实机待验证 |
-| 视觉 Agent | 提供 HID API 接口 | 自动截帧/模型循环尚未接入 |
+| 视觉 Agent | 提供 HID API 与可选的最新 JPEG 接口 | 模型循环尚未接入 |
 | 远程云端 | 未提供加密公网隧道 | 当前只用于可信局域网 |
 
 ## 安装与首轮实验
@@ -75,6 +75,7 @@ idf.py -p PORT flash
 打开它输出的 `127.0.0.1` 随机路径，在本机填写 Wi-Fi。Wi-Fi 配置及 token 写入板子 NVS。token 保存在 `.local/token`，默认不提交。本实验固件没有配置 Flash/NVS 加密。
 
 使用 `scripts/hardware_probe.py --device DEVICE_LAN_IPV4` 通过 C3 的 7100 端口做二进制回环。**echo 模式不是 AirPlay 接收器。**
+加 `--stream` 可测试连续流，默认逐块往返用于字节完整性与延迟检查。
 
 ### 3. 接入真实 AirPlay
 
@@ -89,6 +90,15 @@ uxplay -n C3-Upstream -p tcp 17100,17000,17001 -p udp 16000,16001,16002 -s 480x1
 .venv/bin/c3-airbridge --host MAC_LAN_IPV4 --config .local/relay.json
 ```
 
+在 macOS 上可用 `scripts/run_uxplay.sh` 启动无窗口接收器，脚本隔离所需 GStreamer 插件，避免全局 gst-python 插件扫描挂起。要产生截图：
+
+```bash
+bash scripts/run_uxplay.sh -vs 'jpegenc ! multifilesink location=.local/frame.jpg'
+# 后端启动时加：--frame-file .local/frame.jpg
+```
+
+后端的 `GET /frame` 返回最近 5 秒内的完整 JPEG，需要同样的 Bearer token；不存在、未写完或过期的图片不会作为新观察返回。截图和录制仅保存在被忽略的 `.local/` 下。每次重启 UxPlay 后，应重新运行发现脚本并重启后端，以更新接收器身份。
+
 C3 自动重连并更新监听与发现配置。iPhone 打开控制中心 → 屏幕镜像 → **C3 AirBridge**。选择 `C3-Upstream` 会直接连接 Mac，不算通过 C3 的实验。
 
 先验证发现，再验证配对/SETUP，再验证真实画面。后端遇到未映射端口或不支持的控制流会拒绝并记录错误，不会假装连接成功。它仍是实验适配，尤其需要观察时序回程、iOS 版本和丢包恢复。
@@ -102,6 +112,7 @@ iPhone 配对 **C3 AirBridge**，打开“设置 → 辅助功能 → 触控 →
 | 请求 | JSON |
 |---|---|
 | `GET /status` | 无 |
+| `GET /frame` | 无；需要配置 `--frame-file`，未开始投屏时不可用 |
 | `POST /hid` | `{"op":"move","x":10,"y":0}` |
 | `POST /hid` | `{"op":"click"}` |
 | `POST /hid` | `{"op":"press"}` / `{"op":"release"}` |

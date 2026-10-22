@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
+#include "lwip/tcp.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
@@ -32,7 +33,7 @@ static channel_t channels[MAX_CHANNELS];
 static int tunnel=-1,nlisteners;
 static uint16_t next_id=1;
 static uint64_t bytes_up,bytes_down;
-static uint8_t rxbuf[MAX_PAYLOAD+1],txbuf[MAX_PAYLOAD];
+static uint8_t rxbuf[MAX_PAYLOAD+1],txbuf[MAX_PAYLOAD+1];
 static uint32_t phone_ip;
 static const char *TAG="relay";
 
@@ -63,6 +64,10 @@ static void timeouts(int fd) {
     struct timeval tv={2,0};
     setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&tv,sizeof(tv));
     setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&tv,sizeof(tv));
+    int type=0; socklen_t size=sizeof(type);
+    if(getsockopt(fd,SOL_SOCKET,SO_TYPE,&type,&size)==0 && type==SOCK_STREAM) {
+        int one=1;setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&one,sizeof(one));
+    }
 }
 static void drop(channel_t *ch) {
     if(ch->id && !ch->shared && ch->fd>=0)close(ch->fd);
@@ -99,10 +104,13 @@ static bool set_config(cJSON *j) {
         for(int k=0;k<nlisteners;k++)if(listeners[k].id==id||
            (listeners[k].port==port&&listeners[k].udp==udp))return false;
         int fd=socket(AF_INET,udp?SOCK_DGRAM:SOCK_STREAM,0);
-        if(fd<0)return false;
+        if(fd<0){ESP_LOGW(TAG,"Listener socket allocation failed: %d",errno);return false;}
         int one=1;setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&one,sizeof(one));timeouts(fd);
         struct sockaddr_in addr={.sin_family=AF_INET,.sin_port=htons(port),.sin_addr.s_addr=htonl(INADDR_ANY)};
-        if(bind(fd,(struct sockaddr *)&addr,sizeof(addr))||(!udp&&listen(fd,2))) {close(fd);return false;}
+        if(bind(fd,(struct sockaddr *)&addr,sizeof(addr))||(!udp&&listen(fd,2))) {
+            ESP_LOGW(TAG,"Listener bind/listen failed: port=%d errno=%d",port,errno);
+            close(fd);return false;
+        }
         listeners[nlisteners++]=(listener_t){fd,id,port,udp};
     }
     mdns_service_remove_all();
@@ -153,7 +161,7 @@ static bool handle(uint8_t kind,uint16_t id,size_t len) {
     }
     if(kind==CLOSE) {
         channel_t *ch=find(id);
-        if(ch) {shutdown(ch->fd,SHUT_WR);drop(ch);}
+        if(ch) {if(!ch->udp)shutdown(ch->fd,SHUT_WR);drop(ch);}
         return true;
     }
     if(kind==ACK) {
@@ -173,7 +181,10 @@ static bool handle(uint8_t kind,uint16_t id,size_t len) {
     }
     cJSON *j=cJSON_Parse((char *)rxbuf);if(!j)return false;
     bool ok=false;
-    if(kind==CONFIG)ok=set_config(j);
+    if(kind==CONFIG) {
+        ok=set_config(j);
+        if(!ok)ESP_LOGW(TAG,"Backend configuration rejected");
+    }
     else if(kind==HID) {ok=ack(id,hid_command(j));}
     else if(kind==UDP_OPEN) {
         const char *ip=string(j,"peer");int port=integer(j,"port",1,65535);
@@ -233,9 +244,9 @@ static bool run(void) {
             if(ch->id&&!ch->shared&&!ch->pending&&!ch->eof) {FD_SET(ch->fd,&rf);if(ch->fd>maxfd)maxfd=ch->fd;}
         }
         struct timeval tv={0,100000};int selected=select(maxfd+1,&rf,NULL,NULL,&tv);
-        if(selected<0)return false;
+        if(selected<0){ESP_LOGW(TAG,"select failed: %d",errno);return false;}
         if(FD_ISSET(tunnel,&rf)) {
-            uint8_t h[8];if(exact(tunnel,h,8,false))return false;
+            uint8_t h[8];if(exact(tunnel,h,8,false)){ESP_LOGW(TAG,"Tunnel header read failed: %d",errno);return false;}
             uint32_t len=((uint32_t)h[4]<<24)|((uint32_t)h[5]<<16)|((uint32_t)h[6]<<8)|h[7];
             if(h[0]!=1||len>MAX_PAYLOAD||exact(tunnel,rxbuf,len,false))return false;
             if(!handle(h[1],((uint16_t)h[2]<<8)|h[3],len))return false;
@@ -249,7 +260,7 @@ static bool run(void) {
                 if(fd>=0){timeouts(fd);if(!open_client(l,fd,&addr,false))return false;}
             } else {
                 int got=recvfrom(l->fd,txbuf,sizeof(txbuf),0,(struct sockaddr *)&addr,&n);
-                if(got<0)continue;
+                if(got<0||got>MAX_PAYLOAD)continue;
                 channel_t *found=NULL;
                 for(int k=0;k<MAX_CHANNELS;k++)if(channels[k].id&&channels[k].shared&&
                     channels[k].listener==l->id&&channels[k].peer.sin_addr.s_addr==addr.sin_addr.s_addr&&
@@ -272,7 +283,8 @@ static bool run(void) {
         for(int i=0;i<MAX_CHANNELS;i++) {
             channel_t *ch=&channels[i];
             if(!ch->id||ch->shared||ch->pending||ch->eof||!FD_ISSET(ch->fd,&rf))continue;
-            int got=recv(ch->fd,txbuf,sizeof(txbuf),0);
+            int got=recv(ch->fd,txbuf,ch->udp?sizeof(txbuf):MAX_PAYLOAD,0);
+            if(got>MAX_PAYLOAD)continue;
             if(got>0){if(!frame(DATA,ch->id,txbuf,got))return false;bytes_up+=got;}
             else if(got==0||!(errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR)) {
                 if(!frame(CLOSE,ch->id,NULL,0))return false;

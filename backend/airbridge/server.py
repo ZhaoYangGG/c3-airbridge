@@ -54,6 +54,8 @@ class Session:
         self.started = time.time()
         self.bytes_up = self.bytes_down = 0
         self.device = "unknown"
+        self.finished = asyncio.Event()
+        self.stopping = False
 
     def spawn(self, coro):
         task = asyncio.create_task(coro)
@@ -86,7 +88,7 @@ class Session:
         self.next_reverse += 1
         loop = asyncio.get_running_loop()
         transport, protocol = await loop.create_datagram_endpoint(DatagramQueue, local_addr=("127.0.0.1", 0))
-        self.channels[channel] = {"transport": transport, "protocol": protocol, "udp": True}
+        self.channels[channel] = {"transport": transport, "protocol": protocol, "udp": True, "peer": peer_ip}
         try:
             await self.request(Kind.UDP_OPEN, channel, {"peer": peer_ip, "port": port})
         except BaseException:
@@ -148,7 +150,7 @@ class Session:
         if service["proto"] == "udp":
             transport, protocol = await asyncio.get_running_loop().create_datagram_endpoint(
                 DatagramQueue, remote_addr=("127.0.0.1", service["upstream"]))
-            self.channels[channel] = {"udp": True, "transport": transport, "protocol": protocol,
+            self.channels[channel] = {"udp": True, "transport": transport, "protocol": protocol, "peer": peer_ip,
                                       "reply": ("127.0.0.1", service["upstream"])}
             self.spawn(self.udp_pump(channel, protocol))
         else:
@@ -212,6 +214,14 @@ class Session:
                 state["writer"].close()
             if "transport" in state:
                 state["transport"].close()
+            if state.get("parser") and not self.stopping:
+                # An AirPlay control connection owns its timing/audio/video
+                # channels. Release them when that control session ends.
+                for other, value in list(self.channels.items()):
+                    if value.get("peer") == state["peer"]:
+                        self.close_channel(other)
+                        self.spawn(self.peer.send(Kind.CLOSE, other))
+                self.reverse = {key: value for key, value in self.reverse.items() if key[0] != state["peer"]}
 
     async def run(self):
         try:
@@ -264,9 +274,11 @@ class Session:
                             self.close_channel(channel)
                     else:
                         self.close_channel(channel)
+                        await self.peer.send(Kind.CLOSE, channel)
                 else:
                     raise ValueError(f"unexpected frame {kind}")
         finally:
+            self.stopping = True
             for task in list(self.tasks):
                 task.cancel()
             await asyncio.gather(*self.tasks, return_exceptions=True)
@@ -306,11 +318,12 @@ def load_config(path):
 
 
 class Backend:
-    def __init__(self, token, config, echo=False):
+    def __init__(self, token, config, echo=False, frame_file=None):
         if len(token) < 24:
             raise ValueError("token must be at least 24 characters")
         self.token, self.config, self.echo = token, config, echo
         self.session = None
+        self.frame_file = Path(frame_file) if frame_file else None
 
     async def accept(self, reader, writer):
         peer = Peer(reader, writer)
@@ -320,19 +333,26 @@ class Backend:
             hello = json.loads(payload)
             if kind != Kind.HELLO or channel or not hmac.compare_digest(str(hello.get("token", "")), self.token):
                 raise ValueError("authentication failed")
+            device = str(hello.get("device", "unknown"))[:80]
             if self.session:
-                raise ValueError("one device already connected")
+                old = self.session
+                if old.device != device:
+                    raise ValueError("one device already connected")
+                old.peer.writer.close()
+                await asyncio.wait_for(old.finished.wait(), 5)
             session = Session(peer, self.config["listeners"], self.echo)
-            session.device = str(hello.get("device", "unknown"))[:80]
+            session.device = device
             self.session = session
             await peer.send(Kind.CONFIG, payload=self.config)
             LOG.info("device connected: %s", session.device)
             await session.run()
         except (OSError, ValueError, KeyError, asyncio.TimeoutError, asyncio.IncompleteReadError) as exc:
-            LOG.info("device disconnected: %s", type(exc).__name__)
+            LOG.info("device disconnected: %s: %s", type(exc).__name__, exc)
         finally:
             if self.session is session:
                 self.session = None
+            if session:
+                session.finished.set()
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
@@ -359,6 +379,17 @@ class Backend:
                     raise ValueError("invalid body size")
                 command = json.loads(await asyncio.wait_for(reader.readexactly(size), 3))
                 status, result = 200, await self.session.request(Kind.HID, 0, command)
+            elif method == "GET" and path == "/frame" and self.frame_file:
+                if time.time() - self.frame_file.stat().st_mtime > 5:
+                    raise ValueError("stale frame")
+                with self.frame_file.open("rb") as file:
+                    image = file.read(2 * 1024 * 1024 + 1)
+                if len(image) > 2 * 1024 * 1024 or not image.startswith(b"\xff\xd8") or not image.endswith(b"\xff\xd9"):
+                    raise ValueError("incomplete frame; retry")
+                writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nCache-Control: no-store\r\nContent-Length: {len(image)}\r\nConnection: close\r\n\r\n".encode() + image)
+                await asyncio.wait_for(writer.drain(), 3)
+                writer.close()
+                return
             else:
                 status, result = 404, {"error": "not found or device offline"}
         except (ValueError, KeyError, OSError, asyncio.TimeoutError, asyncio.IncompleteReadError,
@@ -374,7 +405,7 @@ class Backend:
 async def serve(args):
     config = load_config(args.config)
     token = Path(args.token_file).read_text().strip()
-    backend = Backend(token, config, args.echo)
+    backend = Backend(token, config, args.echo, args.frame_file)
     relay = await asyncio.start_server(backend.accept, args.host, args.port, limit=16384)
     admin = await asyncio.start_server(backend.admin, "127.0.0.1", args.admin_port, limit=8192)
     LOG.info("relay %s:%d; local API 127.0.0.1:%d; mode=%s", args.host, args.port, args.admin_port,
@@ -391,6 +422,7 @@ def main():
     parser.add_argument("--token-file", default=".local/token")
     parser.add_argument("--config", default="config/relay.example.json")
     parser.add_argument("--echo", action="store_true", help="echo transport test; does not receive AirPlay")
+    parser.add_argument("--frame-file", help="fresh JPEG written by UxPlay/GStreamer, available at authenticated /frame")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:

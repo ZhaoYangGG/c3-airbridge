@@ -10,8 +10,9 @@ Copyright 2021–2025 Espressif Systems (Shanghai) CO LTD (source-specific dates
 are retained in file headers). License: **Unlicense OR CC0-1.0**. We select CC0-1.0.
 See <https://creativecommons.org/publicdomain/zero/1.0/legalcode>.
 
-These files retain their original license headers. The surrounding application
-does not run the example's automatic input demo.
+These files retain their original license headers. AirBridge changes the GAP
+helper's advertising duration to remain discoverable during longer setup.
+The surrounding application does not run the example's automatic input demo.
 
 ## Separately installed software
 

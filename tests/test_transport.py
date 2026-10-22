@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 import plistlib
+from pathlib import Path
+import tempfile
 import unittest
 
 from airbridge.protocol import HEADER, Kind, MAX_PAYLOAD, Peer, encode, read_frame
@@ -129,6 +131,51 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         body = plistlib.loads(result.body)
         self.assertEqual(body["timingPort"], 6000)
         self.assertEqual(body["streams"][0]["dataPort"], 7100)
+
+    async def test_close_echo_channel_is_acknowledged(self):
+        peer = await self.connect()
+        await self.receive(peer)
+        await peer.send(Kind.OPEN, 1, {"listener": 1, "peer": "192.0.2.3", "port": 40000})
+        await self.receive(peer)
+        await peer.send(Kind.CLOSE, 1)
+        self.assertEqual((await self.receive(peer))[:2], (Kind.CLOSE, 1))
+        self.assertFalse(self.backend.session.channels)
+
+    async def test_authenticated_device_can_reconnect(self):
+        old = await self.connect()
+        await self.receive(old)
+        new = await self.connect()
+        self.assertEqual((await self.receive(new))[0], Kind.CONFIG)
+        self.assertEqual(await asyncio.wait_for(old.reader.read(), 2), b"")
+        await new.send(Kind.PING, payload=b"new-session")
+        self.assertEqual(await self.receive(new), (Kind.PONG, 0, b"new-session"))
+
+    async def test_frame_api_requires_auth_and_rejects_stale_images(self):
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / "frame.jpg"
+            image = b"\xff\xd8test-frame\xff\xd9"
+            file.write_bytes(image)
+            self.backend.frame_file = file
+            server = await asyncio.start_server(self.backend.admin, "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            async def get(token):
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(f"GET /frame HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n".encode())
+                await writer.drain()
+                result = await asyncio.wait_for(reader.read(), 2)
+                writer.close()
+                await writer.wait_closed()
+                return result
+            try:
+                self.assertIn(b"401", (await get("wrong")).split(b"\r\n")[0])
+                result = await get(self.token)
+                self.assertIn(b"200", result.split(b"\r\n")[0])
+                self.assertEqual(result.split(b"\r\n\r\n", 1)[1], image)
+                os.utime(file, (1, 1))
+                self.assertNotIn(b"200", (await get(self.token)).split(b"\r\n")[0])
+            finally:
+                server.close()
+                await server.wait_closed()
 
     async def test_reverse_timing_datagrams(self):
         peer = await self.connect()
