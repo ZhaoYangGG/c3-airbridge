@@ -13,5 +13,6 @@ void relay_task(void *arg);
 void hid_init(void);
 void hid_release(void);
 bool hid_connected(void);
+void hid_link_state(bool *link,bool *encrypted,bool *authenticated);
 bool hid_command(cJSON *obj);
 void print_status(void);

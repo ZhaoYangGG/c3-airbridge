@@ -58,6 +58,8 @@ class Session:
         self.device = "unknown"
         self.finished = asyncio.Event()
         self.stopping = False
+        self.close_reason = None
+        self.queue_overflows = 0
 
     def spawn(self, coro):
         task = asyncio.create_task(coro)
@@ -97,7 +99,7 @@ class Session:
             transport.close()
             self.channels.pop(channel, None)
             raise
-        self.spawn(self.udp_pump(channel, protocol))
+        self.channels[channel]["tasks"] = [self.spawn(self.udp_pump(channel, protocol))]
         local_port = transport.get_extra_info("sockname")[1]
         self.reverse[key] = local_port
         return local_port
@@ -156,14 +158,14 @@ class Session:
                 DatagramQueue, remote_addr=("127.0.0.1", service["upstream"]))
             self.channels[channel] = {"udp": True, "transport": transport, "protocol": protocol, "peer": peer_ip,
                                       "reply": ("127.0.0.1", service["upstream"])}
-            self.spawn(self.udp_pump(channel, protocol))
+            self.channels[channel]["tasks"] = [self.spawn(self.udp_pump(channel, protocol))]
         else:
             reader, writer = await asyncio.wait_for(asyncio.open_connection(
                 "127.0.0.1", service["upstream"], limit=16384), 5)
             writer.transport.set_write_buffer_limits(high=16384, low=4096)
             state = {"writer": writer, "reader": reader, "peer": peer_ip,
                      "parser": Parser() if service.get("control") else None,
-                     "queue": asyncio.Queue(8)}
+                     "queue": asyncio.Queue(64)}
             self.channels[channel] = state
             state["tasks"] = [self.spawn(self.upstream_writer(channel, state)),
                               self.spawn(self.upstream_reader(channel, state))]
@@ -222,6 +224,11 @@ class Session:
                 state["writer"].close()
             if "transport" in state:
                 state["transport"].close()
+            # Remove mappings for individually closed reverse endpoints too.
+            if state.get("udp"):
+                local = state["transport"].get_extra_info("sockname") if "transport" in state else None
+                if local:
+                    self.reverse = {key: port for key, port in self.reverse.items() if port != local[1]}
             if state.get("owns_media") and not self.stopping:
                 # An AirPlay control connection owns its timing/audio/video
                 # channels. Release them when that control session ends.
@@ -279,6 +286,8 @@ class Session:
                             await asyncio.sleep(0)
                         except asyncio.QueueFull:
                             # Fail boundedly rather than deadlock ACK delivery.
+                            self.queue_overflows += 1
+                            LOG.warning("channel %s bounded queue overflow", channel)
                             await self.peer.send(Kind.CLOSE, channel)
                             self.close_channel(channel)
                 elif kind == Kind.CLOSE:
@@ -388,7 +397,12 @@ class Backend:
                 s = self.session
                 status, result = 200, {"connected": s is not None, "device": s.device if s else None,
                     "device_status": s.last_status if s else {}, "channels": len(s.channels) if s else 0,
-                    "bytes_up": s.bytes_up if s else 0, "bytes_down": s.bytes_down if s else 0}
+                    "bytes_up": s.bytes_up if s else 0, "bytes_down": s.bytes_down if s else 0,
+                    "session_age": round(time.time()-s.started, 1) if s else None,
+                    "tasks": len(s.tasks) if s else 0,
+                    "queue_overflows": s.queue_overflows if s else 0,
+                    "frame_age": round(time.time()-self.frame_file.stat().st_mtime, 3)
+                        if self.frame_file and self.frame_file.exists() else None}
             elif method == "POST" and path == "/hid" and self.session:
                 size = int(headers.get("content-length", "0"))
                 if not 0 < size <= 1024:

@@ -521,6 +521,8 @@ static esp_err_t start_bt_scan(uint32_t seconds)
  * BLE GAP
  * */
 extern void ble_hid_task_start_up(void);
+extern void bridge_hid_gap_connected(uint16_t handle);
+extern void bridge_hid_gap_disconnected(void);
 static void ble_gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
     switch (event) {
@@ -747,6 +749,8 @@ esp_err_t esp_hid_ble_gap_adv_start(void)
 #define GATT_SVR_SVC_HID_UUID 0x1812
 
 extern void ble_hid_task_start_up(void);
+extern void bridge_hid_gap_connected(uint16_t handle);
+extern void bridge_hid_gap_disconnected(void);
 static struct ble_hs_adv_fields fields;
 
 esp_err_t esp_hid_ble_gap_adv_init(uint16_t appearance, const char *device_name)
@@ -817,12 +821,14 @@ nimble_hid_gap_event(struct ble_gap_event *event, void *arg)
                 event->connect.status == 0 ? "established" : "failed",
                 event->connect.status);
         if (event->connect.status == 0) {
+            bridge_hid_gap_connected(event->connect.conn_handle);
             rc = ble_gap_security_initiate(event->connect.conn_handle);
             ESP_LOGI(TAG, "HID security initiation: %d", rc);
         }
         return 0;
         break;
     case BLE_GAP_EVENT_DISCONNECT:
+        bridge_hid_gap_disconnected();
         ESP_LOGI(TAG, "disconnect; reason=%d", event->disconnect.reason);
 
         return 0;

@@ -19,7 +19,7 @@ volatile bool bridge_wifi_ready;
 static const char *TAG = "airbridge";
 
 void print_status(void) {
-    printf("AIRBRIDGE_STATUS {\"firmware\":\"0.1.0\",\"target\":\"esp32c3\","
+    printf("AIRBRIDGE_STATUS {\"firmware\":\"0.2.0\",\"target\":\"esp32c3\","
            "\"wifi\":%s,\"ble\":%s,\"heap\":%lu,\"min_heap\":%lu,\"uptime_ms\":%lld}\n",
            bridge_wifi_ready ? "true" : "false", hid_connected() ? "true" : "false",
            (unsigned long)esp_get_free_heap_size(), (unsigned long)esp_get_minimum_free_heap_size(),
@@ -103,6 +103,7 @@ void app_main(void) {
         nvs_close(h);
     }
     setvbuf(stdin,NULL,_IONBF,0);
+    esp_log_level_set("NimBLE",ESP_LOG_WARN);
     hid_init();
     xTaskCreate(console_task,"provision",4096,NULL,3,NULL);
     if(!loaded) {

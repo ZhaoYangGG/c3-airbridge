@@ -258,6 +258,20 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         finally:
             transport.close()
 
+    async def test_repeated_reverse_udp_close_does_not_leak_pump_tasks(self):
+        peer=await self.connect();await self.receive(peer)
+        session=self.backend.session
+        baseline=len(session.tasks)
+        for i in range(12):
+            task=asyncio.create_task(session.reverse_udp('192.0.2.3',5000+i))
+            kind,channel,_=await self.receive(peer)
+            self.assertEqual(kind,Kind.UDP_OPEN)
+            await peer.send(Kind.ACK,channel,{'ok':True});await task
+            await peer.send(Kind.CLOSE,channel);await self.receive(peer)
+            await asyncio.sleep(.01)
+            self.assertFalse(session.reverse)
+            self.assertEqual(len(session.tasks),baseline)
+
 
 if __name__ == "__main__":
     unittest.main()

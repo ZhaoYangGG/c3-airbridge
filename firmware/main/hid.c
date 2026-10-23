@@ -4,6 +4,7 @@
 #include "esp_hidd.h"
 #include "esp_hid_gap.h"
 #include "host/ble_hs.h"
+#include "host/ble_gap.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/hid/ble_svc_hid.h"
 #include "nimble/nimble_port.h"
@@ -12,8 +13,7 @@
 #include "freertos/task.h"
 
 static esp_hidd_dev_t *device;
-static volatile bool connected;
-static volatile bool secured;
+static volatile uint16_t connection_handle=BLE_HS_CONN_HANDLE_NONE;
 static uint8_t buttons;
 // ESP-IDF 6.0.1 supplies the Battery *service* UUID (0x180f) here.
 // HOGP's External Report Reference must point to a characteristic UUID.
@@ -24,7 +24,21 @@ int __wrap_ble_svc_hid_add(struct ble_svc_hid_params params) {
 }
 // The CC0 ESP-IDF GAP helper calls this after encryption. This project only
 // sends input on explicit authenticated commands, never a demo on pairing.
-void ble_hid_task_start_up(void) {secured=true;}
+void ble_hid_task_start_up(void) { /* Read the live security descriptor below. */ }
+// GAP callbacks run synchronously; ESP_HIDD_* events are queued. An old queued
+// CONNECT event must not clear security after encryption has already completed.
+void bridge_hid_gap_connected(uint16_t handle) {connection_handle=handle;}
+void bridge_hid_gap_disconnected(void) {connection_handle=BLE_HS_CONN_HANDLE_NONE;buttons=0;}
+void hid_link_state(bool *link,bool *encrypted,bool *authenticated) {
+    struct ble_gap_conn_desc desc;
+    *link=connection_handle!=BLE_HS_CONN_HANDLE_NONE && ble_gap_conn_find(connection_handle,&desc)==0;
+    *encrypted=*link && desc.sec_state.encrypted;
+    *authenticated=*link && desc.sec_state.authenticated;
+}
+bool hid_connected(void) {
+    bool link,encrypted,authenticated;hid_link_state(&link,&encrypted,&authenticated);
+    return link && encrypted && authenticated;
+}
 static const uint8_t reports[]={
     // Mouse, report 1: buttons, relative X/Y, wheel.
     0x05,0x01,0x09,0x02,0xa1,0x01,0x85,0x01,0x09,0x01,0xa1,0x00,
@@ -46,12 +60,11 @@ static esp_hid_device_config_t config={
 
 static bool mouse(int x,int y,int wheel) {
     uint8_t data[]={buttons,(uint8_t)x,(uint8_t)y,(uint8_t)wheel};
-    return connected && secured && esp_hidd_dev_input_set(device,0,1,data,sizeof(data))==ESP_OK;
+    return hid_connected() && esp_hidd_dev_input_set(device,0,1,data,sizeof(data))==ESP_OK;
 }
-bool hid_connected(void) {return connected && secured;}
 void hid_release(void) {
     buttons=0;
-    if(connected && secured) {
+    if(hid_connected()) {
         mouse(0,0,0);
         uint8_t keys[8]={0}; esp_hidd_dev_input_set(device,0,2,keys,sizeof(keys));
     }
@@ -62,9 +75,8 @@ static void callback(void *arg,esp_event_base_t base,int32_t id,void *data) {
         ESP_ERROR_CHECK(ble_svc_gap_device_appearance_set(ESP_HID_APPEARANCE_KEYBOARD));
         esp_hid_ble_gap_adv_start();
     }
-    else if(id==ESP_HIDD_CONNECT_EVENT) {connected=true; secured=false;}
     else if(id==ESP_HIDD_DISCONNECT_EVENT) {
-        connected=false; secured=false; buttons=0; esp_hid_ble_gap_adv_start();
+        if(connection_handle==BLE_HS_CONN_HANDLE_NONE)esp_hid_ble_gap_adv_start();
     }
 }
 static void host(void *arg) {nimble_port_run(); nimble_port_freertos_deinit();}
@@ -82,7 +94,7 @@ static bool number(cJSON *o,const char *key,int *out,int lo,int hi) {
     *out=v->valueint; return true;
 }
 bool hid_command(cJSON *o) {
-    if(!connected || !secured) return false;
+    if(!hid_connected()) return false;
     cJSON *op=cJSON_GetObjectItemCaseSensitive(o,"op");
     if(!cJSON_IsString(op)) return false;
     if(!strcmp(op->valuestring,"move")) {

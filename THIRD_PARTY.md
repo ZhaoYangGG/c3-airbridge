@@ -20,9 +20,12 @@ The surrounding application does not run the example's automatic input demo.
 
 - [UxPlay](https://github.com/FDH2/UxPlay), GPL-3.0: separately built/run process;
   no UxPlay code is linked into this firmware/backend. The small derivative
-  `patches/uxplay-local-dnssd.patch` is GPL-3.0, with its license in
+  `patches/uxplay-local-dnssd.patch` and `patches/uxplay-mirror-disconnect.patch`
+  are GPL-3.0, with their license in
   `patches/COPYING`. It optionally restricts Bonjour registration to the local
-  Mac so iPhone discovery cannot merge the upstream and C3 receivers.
+  Mac so iPhone discovery cannot merge the upstream and C3 receivers. The
+  disconnect patch closes the video descriptor and requests a receiver reset
+  on video EOF, so a stopped video thread cannot leave a phantom session.
 - ESP-IDF, NimBLE, cJSON and mDNS retain their own upstream licenses.
 - [ESP32 iPhone Agent by Henry Yuan](https://github.com/onehumanbeing/esp32-iphone-agent)
   inspired the architecture and is the comparison baseline. No code from that

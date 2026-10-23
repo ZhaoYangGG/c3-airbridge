@@ -6,6 +6,8 @@ __pycache__/
 *.bin
 *.log
 firmware/build/
+build/
+dist/
 firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/managed_components/

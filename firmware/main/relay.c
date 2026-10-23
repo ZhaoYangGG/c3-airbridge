@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "mdns.h"
 #include "airbridge.h"
@@ -35,6 +36,11 @@ static uint16_t next_id=1;
 static uint64_t bytes_up,bytes_down;
 static uint8_t rxbuf[MAX_PAYLOAD+1],txbuf[MAX_PAYLOAD+1];
 static uint32_t phone_ip;
+// CLOSE and DATA can cross on the two directions of the TCP tunnel.
+// Keep bounded tombstones instead of resetting every other live channel.
+static uint16_t closed_ids[MAX_CHANNELS*4];
+static size_t closed_next;
+static uint32_t late_data, transport_reconnects;
 static const char *TAG="relay";
 
 static int exact(int fd,void *ptr,size_t size,bool writing) {
@@ -70,6 +76,7 @@ static void timeouts(int fd) {
     }
 }
 static void drop(channel_t *ch) {
+    if(ch->id)closed_ids[closed_next++%(MAX_CHANNELS*4)]=ch->id;
     if(ch->id && !ch->shared && ch->fd>=0)close(ch->fd);
     free(ch->first_datagram);
     memset(ch,0,sizeof(*ch));ch->fd=-1;
@@ -81,6 +88,7 @@ static channel_t *find(uint16_t id) {
 static channel_t *allocate(uint16_t id) {
     if(!id||find(id))return NULL;
     for(int i=0;i<MAX_CHANNELS;i++)if(!channels[i].id) {
+        for(int k=0;k<MAX_CHANNELS*4;k++)if(closed_ids[k]==id)closed_ids[k]=0;
         channels[i].id=id;channels[i].fd=-1;return &channels[i];
     }
     return NULL;
@@ -150,7 +158,11 @@ static bool handle(uint8_t kind,uint16_t id,size_t len) {
     if(kind==PING)return frame(PONG,id,rxbuf,len);
     if(kind==PONG)return true;
     if(kind==DATA) {
-        channel_t *ch=find(id);if(!ch)return false;
+        channel_t *ch=find(id);
+        if(!ch) {
+            for(int k=0;k<MAX_CHANNELS*4;k++)if(closed_ids[k]==id){late_data++;return true;}
+            ESP_LOGW(TAG,"Data on unknown channel %u",id);return false;
+        }
         int n;
         if(ch->shared)n=sendto(ch->fd,rxbuf,len,0,(struct sockaddr *)&ch->peer,sizeof(ch->peer));
         else if(ch->udp)n=send(ch->fd,rxbuf,len,0);
@@ -231,9 +243,13 @@ static bool run(void) {
         int64_t now=esp_timer_get_time();
         if(now-last_rx>45000000)return false;
         if(now-last_status>10000000) {
-            char s[256];snprintf(s,sizeof(s),"{\"heap\":%lu,\"min_heap\":%lu,\"ble\":%s,\"up\":%llu,\"down\":%llu}",
+            int active=0;for(int k=0;k<MAX_CHANNELS;k++)active+=channels[k].id!=0;
+            bool link,encrypted,authenticated;hid_link_state(&link,&encrypted,&authenticated);
+            char s[512];snprintf(s,sizeof(s),"{\"firmware\":\"0.2.0\",\"heap\":%lu,\"min_heap\":%lu,\"largest_heap\":%lu,\"ble\":%s,\"ble_link\":%s,\"ble_encrypted\":%s,\"ble_authenticated\":%s,\"up\":%llu,\"down\":%llu,\"uptime_ms\":%lld,\"channels\":%d,\"late_data\":%lu,\"reconnects\":%lu,\"reset_reason\":%d}",
                 (unsigned long)esp_get_free_heap_size(),(unsigned long)esp_get_minimum_free_heap_size(),
-                hid_connected()?"true":"false",bytes_up,bytes_down);
+                (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                hid_connected()?"true":"false",link?"true":"false",encrypted?"true":"false",authenticated?"true":"false",bytes_up,bytes_down,now/1000,active,
+                (unsigned long)late_data,(unsigned long)transport_reconnects,(int)esp_reset_reason());
             if(!frame(STATUS,0,s,strlen(s))||!frame(PING,0,NULL,0))return false;
             last_status=now;
         }
@@ -303,7 +319,7 @@ void relay_task(void *arg) {
     for(;;) {
         if(bridge_wifi_ready) {
             tunnel=dial();
-            if(tunnel>=0){ESP_LOGI(TAG,"Backend transport connected");run();cleanup();ESP_LOGI(TAG,"Transport closed; retrying");}
+            if(tunnel>=0){ESP_LOGI(TAG,"Backend transport connected");run();cleanup();transport_reconnects++;ESP_LOGI(TAG,"Transport closed; retrying");}
         }
         vTaskDelay(pdMS_TO_TICKS(3000));
     }

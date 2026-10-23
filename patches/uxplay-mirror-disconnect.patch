@@ -1,0 +1,24 @@
+diff --git a/lib/raop_rtp_mirror.c b/lib/raop_rtp_mirror.c
+index feb9b16..96fb7e8 100644
+--- a/lib/raop_rtp_mirror.c
++++ b/lib/raop_rtp_mirror.c
+@@ -306,8 +306,10 @@ raop_rtp_mirror_thread(void *arg)
+                 logger_log(raop_rtp_mirror->logger, LOGGER_DEBUG,
+                            "raop_rtp_mirror tcp socket was closed by client (recv returned 0); got %d bytes of 128 byte header",readstart);
+                 FD_CLR(stream_fd, &rfds);
++                CLOSESOCKET(stream_fd);
+                 stream_fd = -1;
+-                continue;
++                conn_reset = true;
++                break;
+             } else if (payload == NULL && ret == -1) {
+                 int sock_err = SOCKET_GET_ERROR();
+                 if (sock_err == SOCKET_ERRORNAME(EAGAIN) || sock_err == SOCKET_ERRORNAME(EWOULDBLOCK)) continue; // Timeouts can happen even if the connection is fine
+@@ -377,6 +379,7 @@ raop_rtp_mirror_thread(void *arg)
+ 
+             if (ret == 0) {
+                 logger_log(raop_rtp_mirror->logger, LOGGER_ERR, "raop_rtp_mirror tcp socket was closed by client (recv returned 0)");
++                conn_reset = true;
+                 break;
+             } else if (ret == -1) {
+                 int sock_err = SOCKET_GET_ERROR();
