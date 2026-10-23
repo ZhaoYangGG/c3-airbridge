@@ -1,21 +1,32 @@
 name: checks
 on: [push, pull_request]
 jobs:
-  backend:
-    runs-on: ubuntu-latest
+  swift-actions:
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-      - run: pip install -e .
-      - run: python -m unittest discover -s tests -v
+      - name: Validate model action boundaries and keyboard encoding
+        run: |
+          mkdir -p .local
+          xcrun swiftc ios/C3Agent/Store.swift ios/C3Agent/Model.swift tests/ActionsTests.swift -o .local/action-tests
+          .local/action-tests
+          xcrun swiftc ios/C3Agent/Vision.swift tests/VisionTests.swift -o .local/vision-tests
+          .local/vision-tests
+          python3 tests/test_device_guard.py
+      - name: Build iPhone app when iOS 27 SDK is available
+        run: |
+          SDK_MAJOR=$(xcrun --sdk iphoneos --show-sdk-version | cut -d. -f1)
+          if [ "$SDK_MAJOR" -ge 27 ]; then
+            xcodebuild -project ios/C3Agent.xcodeproj -scheme C3Agent -configuration Release -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+          else
+            echo '::notice::This runner lacks iOS 27 SDK. App compilation requires Xcode 27; action validation still ran.'
+          fi
   firmware:
     runs-on: ubuntu-latest
     container: espressif/idf:v6.0.1
     steps:
       - uses: actions/checkout@v4
-      - name: Build ESP32-C3
+      - name: Build BLE-only ESP32-C3 firmware
         shell: bash
         run: |
           . "$IDF_PATH/export.sh"

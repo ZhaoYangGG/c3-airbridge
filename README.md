@@ -1,145 +1,75 @@
-# C3 AirBridge
+# C3 Agent
 
-**用 ESP32-C3 做 iPhone Agent 的网络中继与蓝牙操作端。**
+用 **iPhone + ESP32-C3** 执行自然语言手机任务。iPhone 原生取屏、调用视觉模型、调度动作；C3 通过蓝牙输出鼠标和键盘。运行时不依赖 Mac、AirPlay、局域网中继或自建 Agent 服务器。
 
-实验项目。C3 负责小缓冲 TCP/UDP 转发和蓝牙鼠标键盘，AirPlay 握手、解密和视频解码留在网关。**已实测经 C3 转发 iPhone 画面，并通过 C3 打开微信、选择中文候选词和发送明确授权的消息。** 新增千问视觉 Agent、本机控制台与服务监督；具体实机验收和稳定性边界见 [验证记录](docs/validation.md)。
-
-日常连接手机、打开控制台、本机服务安装和火山引擎迁移方法见 **[部署与使用说明](docs/deployment.md)**。
-
-## 架构
+要求 **iOS 27+**，开发安装需要 **Xcode 27+**。这是实机实验项目，不能保证所有 App、所有任务或无限期后台运行都成功；当前验收范围见 [validation](docs/validation.md)。
 
 ```mermaid
 flowchart LR
-    I[iPhone] -->|AirPlay: Wi-Fi| C[ESP32-C3]
-    C -->|bounded multiplexed TCP tunnel| B[Mac / backend proxy]
-    B <-->|loopback TCP / UDP| U[UxPlay: protocol + decrypt + decode]
-    U -->|JPEG / local authenticated frame API| A[Agent]
-    A -->|local authenticated HID API| B
-    B -->|commands| C
-    C -->|BLE HID| I
+    U[在手机 App 输入任务] --> A[iPhone Agent 调度]
+    S[iPhone 当前屏幕] --> C[ScreenCaptureKit 原生取屏]
+    C --> A
+    A --> M[你配置的视觉模型 API]
+    M --> A
+    A -->|安全 BLE GATT 指令| E[ESP32-C3]
+    E -->|蓝牙 HID 键鼠| S
+    E -->|指令执行回执| A
 ```
 
-首轮拓扑：iPhone、C3、Mac 均连接同一个可互通的局域网。C3 主动连接 Mac；手机在“屏幕镜像”选择 **C3 AirBridge**。该入口的 A 记录指向 C3，不是绕过 C3 直连 Mac。C3 原样转发加密视频，不保存完整图像、不做视频解码、不运行模型。
+C3 的 USB 线负责供电、刷机和可选开发诊断。**C3 不支持原生 USB 键鼠**，也不接收或解码视频。接手机供电需要匹配的供电线/转接器；使用电池或独立 USB 供电也可以。
 
-区别于普通 NAT：后端需要向手机发送时序包，因此这里使用有状态双向代理，在后端改写 SETUP 中的端口，并通过独立 UDP 通道回到手机。C3 每帧最多 4096 字节，最多 8 条数据通道和 6 个监听端口。控制消息的 plist 解析只发生在 Mac。
+## 使用
 
-## 当前范围
+1. 给刷入新版固件的 C3 供电。首次在 iPhone 蓝牙中配对 **C3 Agent**；升级旧固件的记录可能仍叫 C3 AirBridge/nimble。若要求配对码，输入 `123456`。这是实验固件的固定配对码，不应在不可信环境中开放配对。
+2. 在 iPhone **设置 → 辅助功能 → 触控 → 辅助触控**中打开辅助触控，并打开**辅助功能 → 键盘 → 全键盘控制**。
+3. 打开 **C3 Agent App**，确认“C3 已连接 · 安全蓝牙”。填写支持图像输入和 JSON 动作输出的 OpenAI-compatible HTTPS API 地址、模型名和 API Key，保存。
+4. 在任务框输入任务，点**开始任务**，在系统提示中确认**共享整个屏幕**，然后轻点弹层外空白处回到 App，任务会自动开始。保持手机解锁，任务运行中避免手动改变页面。
+5. App 自己观察、调用模型并通过 C3 执行输入。回到 App 查看结果或点**停止任务**；点**结束共享**会同时停止任务和取屏。
 
-| 部分 | 已实现 | 验证范围 |
-|---|---|---|
-| C3 固件 | ESP-IDF 6.0.1，Wi-Fi STA、USB 配网、TCP/UDP 中继、状态上报 | 见验证记录 |
-| 蓝牙输入 | 鼠标移动、点击、按住/释放、滚轮、原始键盘 usage | 安全配对、移动、按下/释放点击、计算器键盘输入通过；滚轮/拖动待测 |
-| 后端 | 设备鉴权、有限队列、回压、通道限制、UDP 回程 | 本地协议/集成测试 |
-| AirPlay 适配 | 从真实 UxPlay 复制发现记录、SETUP 端口改写 | 已收到 iPhone 经实板 C3 转发的画面 |
-| 视觉 Agent | 千问兼容接口、截图决策循环、有限动作集、鼠标视觉校准、中文拼音选词、任务停止 | 实机验收见验证记录 |
-| 运维与控制台 | 本机鉴权控制台、LaunchAgent、日志轮转、子服务重启、画面主动刷新 | 本机部署；USB 备用观察明确标注 |
-| 远程云端 | 提供 Agent systemd 配置与 SSH 加密隧道迁移说明 | 服务器登录失败时按用户要求先本机部署；没有暴露 C3 明文公网入口 |
+画面按需发送给所配置的模型服务。Key 保存在 iPhone Keychain；最新图像和开发诊断只保存在 App 私有目录。没有“先录一整段视频，再上传”的步骤。静态屏幕可能暂时没有新帧；需要观察时 App 通过小幅鼠标移动触发更新，未拿到新画面就停止输入。
 
-## 安装与首轮实验
+## 构建和安装
 
-需要 ESP32-C3（4 MB Flash）、数据线、2.4 GHz Wi-Fi、Python 3.11+、ESP-IDF **6.0.1**。iPhone 与 Mac 允许在局域网互通。供电方式不影响协议设计。
+固件使用 ESP-IDF **6.0.1**。Mac 上可能同时连接 C3 和 S3，**端口名会变化，不能靠旧端口选板**。先根据 USB 系统信息和已独立确认的芯片身份，在私有 `.local/c3-device.json` 中绑定你的 C3：
 
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -e .
-.venv/bin/python -m unittest discover -s tests -v
+```json
+{"chip":"esp32c3","usb_serial":"YOUR_VERIFIED_C3_USB_SERIAL"}
 ```
 
-### 1. 备份与烧录
+本项目开发机已经完成私有绑定，不公开设备身份。工具通过 IOKit 检查 USB 序列号，再打开端口；不匹配会立即拒绝，避免重置或刷写同时开发的 S3。
 
-**烧录会替换 MicroPython 和板上应用。先将完整 Flash 读出到仓库以外的私有路径。备份可能包含凭据，不要提交。**
-
-```bash
-# 激活本机 ESP-IDF 6.0.1 环境后：
-python -m esptool --port PORT read-flash 0 ALL /private/path/original-flash.bin
-cd firmware
-idf.py set-target esp32c3
-idf.py build
-idf.py -p PORT flash
+```sh
+. /path/to/esp-idf/export.sh
+python3 scripts/device_guard.py
+python3 scripts/flash_c3.py
 ```
 
-无需整片擦除。恢复原状态：在确认芯片和串口后，将自己的完整备份写回偏移 `0`。不要使用其他开发板的备份。
+不要执行 erase-flash；普通升级保留蓝牙配对信息。确认选择的是 C3 的端口。
 
-### 2. 先测转发链路
+iOS：打开 `ios/C3Agent.xcodeproj`，选自己的 Signing Team 和 iPhone，运行。默认 Bundle ID 为保留旧测试 App 数据而沿用的 `com.zhaoyang.c3screenprobe`，可换成自己的唯一标识。也可使用：
 
-```bash
-# 生成本机 token，Wi-Fi 密码通过交互输入，不会写进代码：
-.venv/bin/c3-provision --port PORT --host MAC_LAN_IPV4
-# 另开终端：
-.venv/bin/c3-airbridge --host MAC_LAN_IPV4 --echo
+```sh
+python3 scripts/install_ios.py --device YOUR_IPHONE_UDID --team YOUR_TEAM_ID
 ```
 
-也可以使用本机配置页：
+可选 `--bundle-id`、`--key-file /private/path/key.txt`、`--base-url`、`--model`。不要把密钥文件放进仓库。首次蓝牙权限、配对和屏幕共享需要系统授权；App 不尝试绕过锁屏或授权。
 
-```bash
-.venv/bin/c3-provision --port PORT --host MAC_LAN_IPV4 --web
-```
+开发签名的有效期取决于你的 Apple 开发者账户；过期后需重新签名安装。App 没有使用私有输入接口、越狱或后台音频保活。
 
-打开它输出的 `127.0.0.1` 随机路径，在本机填写 Wi-Fi。Wi-Fi 配置及 token 写入板子 NVS。token 保存在 `.local/token`，默认不提交。本实验固件没有配置 Flash/NVS 加密。
+## 代码结构
 
-使用 `scripts/hardware_probe.py --device DEVICE_LAN_IPV4` 通过 C3 的 7100 端口做二进制回环。**echo 模式不是 AirPlay 接收器。**
-加 `--stream` 可测试连续流，默认逐块往返用于字节完整性与延迟检查。
+- `ios/C3Agent/`：任务界面、ScreenCaptureKit、模型客户端、动作校验、视觉鼠标定位、CoreBluetooth 回执和后台调度。
+- `firmware/main/`：BLE HID + 加密 GATT 指令服务，固定大小指令队列，不启用 Wi-Fi。
+- `scripts/`：安装和可选 USB 串口诊断；正常手机任务不使用它们。
+- `tests/`：模型动作边界与键盘编码检查。
+- [协议说明](docs/protocol.md)、[验收记录](docs/validation.md)、[旧版迁移](docs/migration.md)。
 
-### 3. 接入真实 AirPlay
+模型动作有参数校验、步骤/时间上限、重复动作检测和停止机制。鼠标采用相对位移与视觉反馈，不能直接把屏幕像素当作 HID 绝对坐标。无法定位指针或获取当前画面时会停止点击。除非任务明确授权，不发送消息、购买、删除数据或修改安全/账号设置。
 
-安装 [UxPlay](https://github.com/FDH2/UxPlay) 及 GStreamer，参照其官方平台说明。macOS 不一定有名为 `uxplay` 的 Homebrew formula；可用 `scripts/build_uxplay.sh` 从固定提交编译，需先安装 `gstreamer libplist openssl@3 pkgconf`。
+**harness 在手机 App 内**：记录动作是否真正执行、对变化中的画面重新决策、处理指令回执、限制定位失败恢复次数，并以另一轮当前截图校验检查完成结果。它不是另一台必须在线的电脑。现阶段鼠标悬停定位仍有失败，尚未通过稳定的完整任务验收，不能把链路接通等同于任意任务可用。
 
-```bash
-# macOS：构建固定版本并应用本机 Bonjour 补丁
-bash scripts/build_uxplay.sh
-# 视频 TCP 17100，控制 TCP 17000；时序/音频 UDP 16000~16002
-bash scripts/run_uxplay.sh -vs 'jpegenc ! multifilesink location=.local/frame.jpg'
-# 另开终端，捕获真实接收器只对本机发布的 TXT/身份：
-.venv/bin/python -m airbridge.discover --local-only --name C3-Upstream
-# 停掉 echo 进程，启动实际代理：
-.venv/bin/c3-airbridge --host MAC_LAN_IPV4 --config .local/relay.json --frame-file .local/frame.jpg
-```
+## 旧版
 
-在 macOS 上可用 `scripts/run_uxplay.sh` 启动无窗口接收器，脚本隔离所需 GStreamer 插件，避免全局 gst-python 插件扫描挂起。要产生截图：
+主线 1.0 已移除 Python 后端、UxPlay、AirPlay 中继、Wi-Fi 配网、云后端部署和旧监督进程。旧实现保留在 Git 标签 [`legacy-airplay-v0.2`](https://github.com/ZhaoYangGG/c3-airbridge/tree/legacy-airplay-v0.2)，无需复制一份旧架构进新版。仓库名保留 `c3-airbridge` 以维持链接。
 
-```bash
-bash scripts/run_uxplay.sh -vs 'jpegenc ! multifilesink location=.local/frame.jpg'
-# 后端启动时加：--frame-file .local/frame.jpg
-```
-
-后端的 `GET /frame` 返回最近 5 秒内的完整 JPEG，需要同样的 Bearer token；不存在、未写完或过期的图片不会作为新观察返回。截图和录制仅保存在被忽略的 `.local/` 下。每次重启 UxPlay 后，应重新运行发现脚本并重启后端，以更新接收器身份。
-
-C3 自动重连并更新监听与发现配置。iPhone 打开控制中心 → 屏幕镜像 → **C3 AirBridge**。macOS 必须使用补丁后的 UxPlay 和 `--local-only` 发现：如果 upstream 同时在局域网广播相同身份，iPhone 会合并入口，甚至经 IPv6 直接连接 Mac。验证时必须同时观察 C3 字节计数和 UxPlay 的 loopback 连接，不能仅凭菜单名称或看到画面判断经过 C3。Linux 的普通局域网发现不加 `--local-only`，其发现隔离尚未验证。
-
-先验证发现，再验证配对/SETUP，再验证真实画面。后端遇到未映射端口或不支持的控制流会拒绝并记录错误，不会假装连接成功。它仍是实验适配，尤其需要观察时序回程、iOS 版本和丢包恢复。
-
-### 4. 蓝牙操作接口
-
-iPhone 配对 **C3 AirBridge**，打开“设置 → 辅助功能 → 触控 → 辅助触控”。如请求配对码，查看本机串口日志（不会提交日志）。
-最初版本的 GATT 名称可能被 iOS 缓存为 `nimble`；若 Mac 能扫描到而手机列表缺失，可在 iPhone 的“设置 → 蓝牙”内关闭再打开蓝牙。不要清空整个 NVS，以免删除 Wi-Fi 配置。
-
-后端只在 `127.0.0.1:8766` 提供管理 API，要求 `Authorization: Bearer TOKEN`：
-
-| 请求 | JSON |
-|---|---|
-| `GET /status` | 无 |
-| `GET /frame` | 无；需要配置 `--frame-file`，未开始投屏时不可用 |
-| `POST /hid` | `{"op":"move","x":10,"y":0}` |
-| `POST /hid` | `{"op":"click"}` |
-| `POST /hid` | `{"op":"press"}` / `{"op":"release"}` |
-| `POST /hid` | `{"op":"scroll","wheel":-1}` |
-| `POST /hid` | `{"op":"key","usage":4,"modifiers":0}`（美式键盘 a） |
-
-每次移动限制 -127~127，Agent 分步移动并通过画面校准。返回 `ok` 仅说明 HID 调用被接受，不证明屏幕已成功点中。中文通过拼音和鼠标选词实现，不是 HID 直接传输 Unicode；不提供锁屏绕过。
-默认短 `click` 已在打开微信、聊天列表和中文候选词选择中实测。较长的 `press`/`release` 可能触发长按菜单，不能一概当作普通点击。系统快捷键受 iOS 版本和全键盘控制配置影响。
-
-## 限制与后续
-
-- LAN 版隧道是带 token 的明文 TCP，不直接暴露公网。远端部署先实现 TLS/VPN/认证与连接恢复。
-- 第一版只支持一个设备、一个 iPhone，会话断开时释放输入状态；Wi-Fi 与 BLE 共享射频，实际带宽需测量。
-- 只处理现有 UxPlay 支持的 AirPlay 镜像控制形式，不承诺所有 AirPlay 版本；加密控制、chunked 控制消息不支持。
-- UDP 包最多 4096 字节，超出应拒绝/丢弃而非拼凑视频。没有将任意“视频包”直接交给模型的接口。
-- 暂不实现 C3 SoftAP、蜂窝回传、通用上网路由或独立电池电源电路。
-- 运行内存、持续吞吐、AirPlay 实机和 BLE 共存指标，是实验结论的必要条件。
-- 0.2.0 已完成十分钟视频/BLE 共存及模型计算器闭环，300 次采样无新增重连，最低 heap 71,352 B；历史版本出现过断流和较低内存。当前样本包含计算器与鼠标活动，仍不保证长期、高动态视频或任意应用任务稳定。
-
-## 来源与许可
-
-项目受 **[ESP32 iPhone Agent by Henry Yuan](https://github.com/onehumanbeing/esp32-iphone-agent)** 启发。本仓库没有复制其 GPL AirPlay 实现；AirPlay 接收由单独安装运行的 UxPlay 提供。
-
-自编代码 MIT；两个 ESP-IDF GAP 帮助文件使用其原有 CC0/Unlicense 授权；UxPlay 补丁单独采用 GPL-3.0，见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+[MIT License](LICENSE) · [Third-party notices](THIRD_PARTY.md)

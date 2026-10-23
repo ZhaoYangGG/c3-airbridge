@@ -1,0 +1,37 @@
+// !$*UTF8*$!
+{ archiveVersion = 1; classes = {}; objectVersion = 56; objects = {
+ A00000000000000000000001 = {isa = PBXProject; attributes = {LastUpgradeCheck = 2710; TargetAttributes = {A00000000000000000000002 = {CreatedOnToolsVersion = 27.1; DevelopmentTeam = ""; ProvisioningStyle = Automatic;};};}; buildConfigurationList = A00000000000000000000003; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; knownRegions = (en,Base); mainGroup = A00000000000000000000004; productRefGroup = A00000000000000000000005; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000002);};
+ A00000000000000000000002 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000006; buildPhases = (A00000000000000000000007,A00000000000000000000008,A00000000000000000000009); buildRules = (); dependencies = (); name = C3Agent; productName = C3Agent; productReference = A0000000000000000000000A; productType = "com.apple.product-type.application";};
+ A00000000000000000000003 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000010,A00000000000000000000011); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;};
+ A00000000000000000000004 = {isa = PBXGroup; children = (A0000000000000000000000B,A00000000000000000000005); sourceTree = "<group>";};
+ A00000000000000000000005 = {isa = PBXGroup; children = (A0000000000000000000000A); name = Products; sourceTree = "<group>";};
+ A00000000000000000000006 = {isa = XCConfigurationList; buildConfigurations = (A00000000000000000000012,A00000000000000000000013); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;};
+ A00000000000000000000007 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000050,A0000000000000000000000D,B00000000000000000000020,B00000000000000000000021,B00000000000000000000022,B00000000000000000000023,B00000000000000000000024,B00000000000000000000025); runOnlyForDeploymentPostprocessing = 0;};
+ A00000000000000000000008 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
+ A00000000000000000000009 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000040); runOnlyForDeploymentPostprocessing = 0;};
+ A0000000000000000000000A = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = C3Agent.app; sourceTree = BUILT_PRODUCTS_DIR;};
+ A0000000000000000000000B = {isa = PBXGroup; children = (A0000000000000000000000C,A0000000000000000000000E,A00000000000000000000020,A00000000000000000000021,A00000000000000000000022,A00000000000000000000023,A00000000000000000000024,A00000000000000000000025,A00000000000000000000040,A00000000000000000000050); path = C3Agent; sourceTree = "<group>";};
+ A0000000000000000000000C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App.swift; sourceTree = "<group>";};
+ A0000000000000000000000D = {isa = PBXBuildFile; fileRef = A0000000000000000000000C;};
+ A0000000000000000000000E = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>";};
+ A00000000000000000000010 = {isa = XCBuildConfiguration; buildSettings = {SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 27.0; SWIFT_VERSION = 5.0; CLANG_ENABLE_MODULES = YES; DEBUG_INFORMATION_FORMAT = dwarf; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;}; name = Debug;};
+ A00000000000000000000011 = {isa = XCBuildConfiguration; buildSettings = {SDKROOT = iphoneos; IPHONEOS_DEPLOYMENT_TARGET = 27.0; SWIFT_VERSION = 5.0; CLANG_ENABLE_MODULES = YES; SWIFT_OPTIMIZATION_LEVEL = "-O";}; name = Release;};
+ A00000000000000000000012 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ""; PRODUCT_BUNDLE_IDENTIFIER = com.zhaoyang.c3screenprobe; PRODUCT_NAME = "$(TARGET_NAME)"; INFOPLIST_FILE = C3Agent/Info.plist; TARGETED_DEVICE_FAMILY = 1; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; ENABLE_USER_SCRIPT_SANDBOXING = YES;}; name = Debug;};
+ A00000000000000000000013 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = ""; PRODUCT_BUNDLE_IDENTIFIER = com.zhaoyang.c3screenprobe; PRODUCT_NAME = "$(TARGET_NAME)"; INFOPLIST_FILE = C3Agent/Info.plist; TARGETED_DEVICE_FAMILY = 1; SUPPORTED_PLATFORMS = "iphoneos iphonesimulator"; ENABLE_USER_SCRIPT_SANDBOXING = YES;}; name = Release;};
+A00000000000000000000020 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Agent.swift; sourceTree = "<group>";};
+B00000000000000000000020 = {isa = PBXBuildFile; fileRef = A00000000000000000000020;};
+A00000000000000000000021 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bluetooth.swift; sourceTree = "<group>";};
+B00000000000000000000021 = {isa = PBXBuildFile; fileRef = A00000000000000000000021;};
+A00000000000000000000022 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Capture.swift; sourceTree = "<group>";};
+B00000000000000000000022 = {isa = PBXBuildFile; fileRef = A00000000000000000000022;};
+A00000000000000000000023 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Model.swift; sourceTree = "<group>";};
+B00000000000000000000023 = {isa = PBXBuildFile; fileRef = A00000000000000000000023;};
+A00000000000000000000024 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Pointer.swift; sourceTree = "<group>";};
+B00000000000000000000024 = {isa = PBXBuildFile; fileRef = A00000000000000000000024;};
+A00000000000000000000025 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Store.swift; sourceTree = "<group>";};
+B00000000000000000000025 = {isa = PBXBuildFile; fileRef = A00000000000000000000025;};
+A00000000000000000000040 = {isa = PBXFileReference; lastKnownFileType = text; path = AgentPrompt.txt; sourceTree = "<group>";};
+B00000000000000000000040 = {isa = PBXBuildFile; fileRef = A00000000000000000000040;};
+A00000000000000000000050 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Vision.swift; sourceTree = "<group>";};
+B00000000000000000000050 = {isa = PBXBuildFile; fileRef = A00000000000000000000050;};
+}; rootObject = A00000000000000000000001; }

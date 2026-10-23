@@ -14,3 +14,8 @@ firmware/managed_components/
 .env
 secrets*
 *.egg-info/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.mobileprovision
+*.ipa

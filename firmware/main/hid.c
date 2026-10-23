@@ -7,6 +7,8 @@
 #include "host/ble_gap.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/hid/ble_svc_hid.h"
+#include "services/gatt/ble_svc_gatt.h"
+#include "esp_timer.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "freertos/FreeRTOS.h"
@@ -15,6 +17,7 @@
 static esp_hidd_dev_t *device;
 static volatile uint16_t connection_handle=BLE_HS_CONN_HANDLE_NONE;
 static uint8_t buttons;
+static int64_t last_input;
 // ESP-IDF 6.0.1 supplies the Battery *service* UUID (0x180f) here.
 // HOGP's External Report Reference must point to a characteristic UUID.
 int __real_ble_svc_hid_add(struct ble_svc_hid_params params);
@@ -24,11 +27,14 @@ int __wrap_ble_svc_hid_add(struct ble_svc_hid_params params) {
 }
 // The CC0 ESP-IDF GAP helper calls this after encryption. This project only
 // sends input on explicit authenticated commands, never a demo on pairing.
-void ble_hid_task_start_up(void) { /* Read the live security descriptor below. */ }
+void ble_hid_task_start_up(void) {
+    // Refresh bonded iOS clients when upgrading from the HID-only legacy DB.
+    ble_svc_gatt_changed(1,0xffff);
+}
 // GAP callbacks run synchronously; ESP_HIDD_* events are queued. An old queued
 // CONNECT event must not clear security after encryption has already completed.
 void bridge_hid_gap_connected(uint16_t handle) {connection_handle=handle;}
-void bridge_hid_gap_disconnected(void) {connection_handle=BLE_HS_CONN_HANDLE_NONE;buttons=0;}
+void bridge_hid_gap_disconnected(void) {connection_handle=BLE_HS_CONN_HANDLE_NONE;buttons=0;control_disconnected();}
 void hid_link_state(bool *link,bool *encrypted,bool *authenticated) {
     struct ble_gap_conn_desc desc;
     *link=connection_handle!=BLE_HS_CONN_HANDLE_NONE && ble_gap_conn_find(connection_handle,&desc)==0;
@@ -49,24 +55,32 @@ static const uint8_t reports[]={
     0x05,0x01,0x09,0x06,0xa1,0x01,0x85,0x02,0x05,0x07,0x19,0xe0,0x29,0xe7,
     0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x08,0x81,0x02,
     0x95,0x01,0x75,0x08,0x81,0x03,0x95,0x06,0x75,0x08,
-    0x15,0x00,0x25,0x65,0x05,0x07,0x19,0x00,0x29,0x65,0x81,0x00,0xc0
+    0x15,0x00,0x25,0x65,0x05,0x07,0x19,0x00,0x29,0x65,0x81,0x00,0xc0,
+    // Consumer Control, report 3: one 16-bit usage (AC Search).
+    0x05,0x0c,0x09,0x01,0xa1,0x01,0x85,0x03,0x15,0x00,0x26,0xff,0x02,
+    0x19,0x00,0x2a,0xff,0x02,0x75,0x10,0x95,0x01,0x81,0x00,0xc0
 };
 static esp_hid_raw_report_map_t maps[]={{.data=reports,.len=sizeof(reports)}};
 static esp_hid_device_config_t config={
     .vendor_id=0x303a,.product_id=0x4001,.version=0x0100,
-    .device_name="C3 AirBridge",.manufacturer_name="c3-airbridge",
+    .device_name="C3 Agent",.manufacturer_name="c3-airbridge",
     .serial_number="experimental",.report_maps=maps,.report_maps_len=1
 };
 
 static bool mouse(int x,int y,int wheel) {
+    last_input=esp_timer_get_time();
     uint8_t data[]={buttons,(uint8_t)x,(uint8_t)y,(uint8_t)wheel};
     return hid_connected() && esp_hidd_dev_input_set(device,0,1,data,sizeof(data))==ESP_OK;
+}
+void hid_housekeeping(void) {
+    if(buttons && esp_timer_get_time()-last_input>1500000)hid_release();
 }
 void hid_release(void) {
     buttons=0;
     if(hid_connected()) {
         mouse(0,0,0);
         uint8_t keys[8]={0}; esp_hidd_dev_input_set(device,0,2,keys,sizeof(keys));
+        uint8_t consumer[2]={0};esp_hidd_dev_input_set(device,0,3,consumer,sizeof(consumer));
     }
 }
 static void callback(void *arg,esp_event_base_t base,int32_t id,void *data) {
@@ -85,6 +99,7 @@ void hid_init(void) {
     ESP_ERROR_CHECK(esp_hid_gap_init(HIDD_BLE_MODE));
     ESP_ERROR_CHECK(esp_hid_ble_gap_adv_init(ESP_HID_APPEARANCE_KEYBOARD,config.device_name));
     ESP_ERROR_CHECK(esp_hidd_dev_init(&config,ESP_HID_TRANSPORT_BLE,callback,&device));
+    control_init();
     ble_store_config_init(); ble_hs_cfg.store_status_cb=ble_store_util_status_rr;
     ESP_ERROR_CHECK(esp_nimble_enable(host));
 }
@@ -105,6 +120,14 @@ bool hid_command(cJSON *o) {
         int n; return number(o,"wheel",&n,-127,127)&&mouse(0,0,n);
     }
     if(!strcmp(op->valuestring,"release")) {hid_release(); return true;}
+    if(!strcmp(op->valuestring,"consumer")) {
+        int usage;
+        if(!number(o,"usage",&usage,0,0x2ff)||usage!=0x221)return false;
+        uint8_t data[2]={(uint8_t)usage,(uint8_t)(usage>>8)};
+        bool ok=esp_hidd_dev_input_set(device,0,3,data,sizeof(data))==ESP_OK;
+        vTaskDelay(pdMS_TO_TICKS(80));memset(data,0,sizeof(data));
+        return esp_hidd_dev_input_set(device,0,3,data,sizeof(data))==ESP_OK&&ok;
+    }
     if(!strcmp(op->valuestring,"press")||!strcmp(op->valuestring,"click")) {
         buttons=1; bool ok=mouse(0,0,0);
         if(!strcmp(op->valuestring,"click")) {

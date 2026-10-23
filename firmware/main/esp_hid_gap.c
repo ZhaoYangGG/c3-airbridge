@@ -947,6 +947,11 @@ esp_err_t esp_hid_ble_gap_adv_start(void)
         MODLOG_DFLT(ERROR, "error setting advertisement data; rc=%d\n", rc);
         return rc;
     }
+    static ble_uuid128_t command_service=BLE_UUID128_INIT(0x01,0xa0,0x8e,0x70,0x5d,0xd7,0x42,0xb3,0xa2,0x4a,0x2d,0xa5,0xd1,0x1a,0x33,0xc3);
+    struct ble_hs_adv_fields response={0};
+    response.uuids128=&command_service;response.num_uuids128=1;response.uuids128_is_complete=1;
+    rc=ble_gap_adv_rsp_set_fields(&response);
+    if(rc)return rc;
     /* Begin advertising. */
     memset(&adv_params, 0, sizeof adv_params);
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
