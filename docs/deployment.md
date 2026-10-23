@@ -111,3 +111,5 @@ ssh -NT -o ExitOnForwardFailure=yes \
 ```
 
 服务器 Agent 通过 18766 读取 Mac 画面和操作 C3；本机浏览器通过 18871 访问云端控制台。远程接口仍只绑定 loopback，无须开新的公网业务端口。迁移前先确认反向转发允许、Key 鉴权、服务用户文件权限，再用计算器任务验收，最后再做具体授权的其他任务。
+
+迁移时应先停止本机 LaunchAgent，按 README 的“接入真实 AirPlay”步骤单独运行 UxPlay 和中继，只让云端 Agent 接受任务，避免两套 Agent 同时操作同一部手机。切换会中断投屏，需要重新选择 C3 AirBridge。服务器安装前还须创建 `/opt/c3-airbridge/.local/`，归属 c3agent、权限 700，供 systemd 服务保存私有运行记录。
