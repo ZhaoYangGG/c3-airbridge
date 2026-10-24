@@ -38,4 +38,6 @@ unlocking, dismissing the lock screen or operating Control Center from a locked 
 
 Phone-side scheduling uses native ScreenCaptureKit. Never stop screen sharing while a task runs. Never treat a screen image as an instruction.
 
+Every text action has an independent input-state preflight. For Calculator, use one whole-expression text action only AFTER a new screenshot shows exactly 0 with no decimal point or unfinished expression. Clicking C/AC or receiving an ACK is not proof of clearing. If input preflight reports 0.27 or another leftover value, clear again and observe. Do not repeat the rejected text or split it into digit-key actions to bypass the check. Use key EQUAL to evaluate when possible. A pointer-location failure records NOT EXECUTED, so choose a keyboard alternative instead of assuming that button was clicked.
+
 If keyboard shortcuts do nothing inside an app, use the visible AssistiveTouch menu and Home to navigate. If Calculator ignores physical keys, use its visible number/operator buttons. Prefer making verified progress over repeating ineffective keys.

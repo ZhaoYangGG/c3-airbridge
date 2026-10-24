@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 @MainActor final class Model {
     let settings: Settings
@@ -32,6 +33,37 @@ import Foundation
     }
     static func image(_ jpeg: Data) -> [String: Any] {
         ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + jpeg.base64EncodedString()]]
+    }
+}
+
+enum EntryCheck {
+    static func isZero(_ reply: [String:Any]) -> Bool {
+        guard reply["current_value"] as? String == "0",
+              let empty=reply["expression_empty"] as? NSNumber,
+              CFGetTypeID(empty)==CFBooleanGetTypeID(),empty.boolValue,
+              let evidence=reply["evidence"] as? String,!evidence.isEmpty else{return false}
+        return true
+    }
+    static func valueRect(_ reply: [String:Any]) -> CGRect? {
+        guard let values=reply["input_rect"] as? [NSNumber],values.count==4,
+              values.allSatisfy({CFGetTypeID($0) != CFBooleanGetTypeID() && $0.doubleValue.isFinite}) else{return nil}
+        let x=values[0].doubleValue,y=values[1].doubleValue,w=values[2].doubleValue,h=values[3].doubleValue
+        guard x>=0,y>=0,w>=0.02,h>=0.02,x+w<=1,y+h<=1 else{return nil}
+        return CGRect(x:x,y:y,width:w,height:h)
+    }
+    static func allows(_ reply: [String:Any]) -> Bool {
+        func flag(_ key: String) -> Bool {
+            guard let value=reply[key] as? NSNumber,CFGetTypeID(value)==CFBooleanGetTypeID() else{return false}
+            return value.boolValue
+        }
+        guard flag("allowed"),flag("input_ready"),let evidence=reply["evidence"] as? String,!evidence.isEmpty else{return false}
+        if reply["app_kind"] as? String == "calculator" {
+            // Include the full display line, not a crop containing only the
+            // leading zero of a stale value such as 0.27.
+            guard let rect=valueRect(reply),rect.width>=0.65 else{return false}
+            return isZero(reply)
+        }
+        return ["search","text"].contains(reply["app_kind"] as? String ?? "")
     }
 }
 

@@ -10,18 +10,21 @@ import UniformTypeIdentifiers
     var trace: ((String) -> Void)?
     init(_ bluetooth: Bluetooth, _ capture: Capture, _ model: Model) { self.bluetooth = bluetooth; self.capture = capture; self.model = model }
 
-    func observe() async throws -> Frame {
-        if let frame = capture.frame, Date().timeIntervalSince(frame.at) < 2 { return frame }
+    func observe(notBefore: Date? = nil) async throws -> Frame {
+        if let frame = capture.frame, Date().timeIntervalSince(frame.at) < 2,
+           notBefore == nil || frame.at >= notBefore! { return frame }
         let old = capture.frame?.sequence ?? 0
-        try await bluetooth.send(["op": "move", "x": -1, "y": -1])
-        try await bluetooth.send(["op": "move", "x": 1, "y": 1])
-        return try await capture.snapshot(after: old)
+        let issued=Date()
+        try await bluetooth.send(["op": "move", "x": -3, "y": -3])
+        try await bluetooth.send(["op": "move", "x": 3, "y": 3])
+        return try await capture.snapshot(after: old,notBefore:max(notBefore ?? issued,issued))
     }
     private func moved(_ command: [String: Any]) async throws -> Frame {
         let old = capture.frame?.sequence ?? 0
+        let barrier=Date()
         try await bluetooth.send(command)
-        try await Task.sleep(for: .milliseconds(320))
-        return try await capture.snapshot(after: old)
+        try await Task.sleep(for: .milliseconds(550))
+        return try await capture.snapshot(after: old,notBefore:barrier)
     }
     private func locate(_ baseline: Frame, _ frame: Frame, _ expected: CGPoint?) async throws -> CGPoint {
         try? baseline.jpeg.write(to: PrivateFiles.root.appendingPathComponent("pointer-before.jpg"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -62,7 +65,9 @@ import UniformTypeIdentifiers
         return CGPoint(x: box.minX+x*box.width, y: box.minY+y*box.height)
     }
     private func targetHovered(_ baseline: Frame, _ frame: Frame, _ target: CGPoint) async throws -> Bool {
-        let radius = Double(frame.width)*0.09
+        // Include the entire icon AND its label: iOS may snap the pointer to
+        // the icon while the requested click point lies in its label.
+        let radius = Double(frame.width)*0.17
         let box = CGRect(x:target.x-radius,y:target.y-radius,width:radius*2,height:radius*2)
             .intersection(CGRect(x:0,y:0,width:frame.width,height:frame.height)).integral
         guard CursorVision.changed(baseline.image,frame.image,in:box)>0.035,
@@ -76,15 +81,15 @@ import UniformTypeIdentifiers
     }
     func goto(_ x: Double, _ y: Double) async throws -> Frame {
         try await bluetooth.send(["op": "release"])
-        for _ in 0..<2 { try await bluetooth.send(["op":"move","x":-127,"y":-127]);try await Task.sleep(for:.milliseconds(120)) }
+        let homed=Date()
+        for _ in 0..<4 { try await bluetooth.send(["op":"move","x":-127,"y":-127]);try await Task.sleep(for:.milliseconds(120)) }
         try await Task.sleep(for:.milliseconds(300))
-        let baseline = try await capture.snapshot()
+        let baseline = try await capture.snapshot(notBefore:homed)
         let w = Double(baseline.width), h = Double(baseline.height)
         let target = CGPoint(x: x*w, y: y*h)
         let first = try await moved(["op": "move", "x": 30, "y": 30])
         var position = try await locate(baseline, first, CGPoint(x: w*0.25, y: h*0.12))
         var latest = first
-        var hoverEstimates = 0
         let initialExpected = hypot(30.0,30.0)*(0.25+0.07*hypot(30.0,30.0))*w/430
         var acceleration = min(3,max(0.6,hypot(position.x,position.y)/initialExpected))
         // Traverse horizontally before descending. This keeps the approach
@@ -92,16 +97,16 @@ import UniformTypeIdentifiers
         // pointer, and still measures every move before a click.
         var crossing = abs(target.x-position.x) > w*0.08
         let crossingY = position.y
-        for _ in 0..<24 {
+        var lastError=CGVector.zero
+        for _ in 0..<48 {
             try Task.checkCancellation()
             if crossing && abs(target.x-position.x) < max(9,w*0.024) { crossing = false }
             let waypoint = crossing ? CGPoint(x:target.x,y:crossingY) : target
             let dx = waypoint.x-position.x, dy = waypoint.y-position.y, distance = hypot(dx, dy)
             if distance < max(9, w*0.024) { _ = try await capture.snapshot(); return latest }
-            let logical = distance*430/w/acceleration
-            let units = min(35, max(1, (-0.25+sqrt(0.0625+0.28*logical))/0.14*0.72))
-            var mx = Int((units*dx/distance).rounded()), my = Int((units*dy/distance).rounded())
-            if mx == 0 && my == 0 { mx = dx > 0 ? 1 : -1 }
+            let reversed = dx*lastError.dx+dy*lastError.dy < 0
+            let (mx,my) = MouseStep.units(dx:dx,dy:dy,width:w,acceleration:acceleration,reversed:reversed)
+            lastError=CGVector(dx:dx,dy:dy)
             let gain = (0.25+0.07*hypot(Double(mx),Double(my)))*w/430
             let previous = position
             let expected = CGPoint(x: position.x+Double(mx)*gain*acceleration, y: position.y+Double(my)*gain*acceleration)
@@ -111,19 +116,7 @@ import UniformTypeIdentifiers
                 trace?("鼠标目标控件已出现可见悬停反馈")
                 return latest
             }
-            do { position = try await locate(baseline, latest, expected) }
-            catch {
-                // iOS can absorb the pointer into a hovered control. Permit a
-                // bounded correction only near the measured destination when
-                // that exact target region visibly changed on hover.
-                let radius = max(24,w*0.065)
-                let box = CGRect(x:target.x-radius,y:target.y-radius,width:radius*2,height:radius*2)
-                    .intersection(CGRect(x:0,y:0,width:baseline.width,height:baseline.height)).integral
-                guard hypot(expected.x-target.x,expected.y-target.y)<w*0.065,
-                      hoverEstimates<2, CursorVision.changed(baseline.image,latest.image,in:box)>0.045 else { throw error }
-                position=expected;hoverEstimates+=1
-                trace?("鼠标已进入可见悬停区域，执行小幅校正")
-            }
+            position = try await locate(baseline, latest, expected)
             let observed = hypot(position.x-previous.x,position.y-previous.y)
             let nominal = hypot(Double(mx),Double(my))*gain
             if nominal>15,observed>12 {
@@ -134,11 +127,17 @@ import UniformTypeIdentifiers
         throw AgentError.message("鼠标定位未收敛，停止点击")
     }
     func click(_ x: Double, _ y: Double) async throws {
+        let scene=try await observe()
         _ = try await goto(x, y)
+        let current=try await observe()
+        guard Agent.similar(scene.image,current.image) else {throw AgentError.message("点击前画面变化，未执行点击")}
         try await bluetooth.send(["op": "click"])
     }
     func swipe(_ x: Double, _ y: Double, _ endX: Double, _ endY: Double) async throws {
+        let scene=try await observe()
         let frame = try await goto(x, y)
+        let current=try await observe()
+        guard Agent.similar(scene.image,current.image) else {throw AgentError.message("点击前画面变化，未执行拖动")}
         let dx = (endX-x)*Double(frame.width), dy = (endY-y)*Double(frame.height), distance = hypot(dx,dy)
         guard distance > 1 else { return }
         let logical = distance*430/Double(frame.width)/20

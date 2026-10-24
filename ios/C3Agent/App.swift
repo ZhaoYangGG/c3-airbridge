@@ -36,7 +36,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
     private var queuedTask: String?
     private var queuedSteps=24
     private var diagnosticBusy=false
-    var state="launch" { didSet { persist() } }
+    var state="launch" { didSet { if state=="active" {consumeInbox()};persist() } }
     private let session=UUID().uuidString
 
     override func viewDidLoad() {
@@ -56,6 +56,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         taskInput.accessibilityLabel="任务内容";taskInput.heightAnchor.constraint(equalToConstant:110).isActive=true;stack.addArrangedSubview(taskInput)
         let start=button("开始任务",#selector(startTask));start.configuration = .filled();start.configuration?.title="开始任务";stack.addArrangedSubview(start)
         let row=UIStackView(arrangedSubviews:[button("停止任务",#selector(stopTask)),button("连接 C3",#selector(connectBoard)),button("结束共享",#selector(stopSharing))]);row.distribution = .fillEqually;stack.addArrangedSubview(row)
+        stack.addArrangedSubview(button("开始屏幕共享",#selector(startSharing)))
         progress.numberOfLines=0;progress.font = .systemFont(ofSize:16,weight:.medium);stack.addArrangedSubview(progress)
         logs.numberOfLines=0;logs.font = .monospacedSystemFont(ofSize:12,weight:.regular);logs.textColor = .secondaryLabel;stack.addArrangedSubview(logs)
         let configTitle=UILabel();configTitle.text="模型配置";configTitle.font = .boldSystemFont(ofSize:20);stack.addArrangedSubview(configTitle)
@@ -67,7 +68,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         let help=UILabel();help.numberOfLines=0;help.font = .systemFont(ofSize:13);help.textColor = .secondaryLabel
         help.text="首次使用：给 C3 供电，完成蓝牙配对；在辅助功能中开启辅助触控与全键盘控制。开始任务后，确认共享整个屏幕，再轻点弹层外的空白区域返回 App，任务会自动开始。保持手机解锁。画面会按任务发送给所配置的模型 API。返回本 App 可停止任务。";stack.addArrangedSubview(help)
         bluetooth.changed={ [weak self] in self?.refresh() };capture.changed={ [weak self] in self?.refresh();self?.startQueuedIfReady() }
-        capture.stopped={ [weak self] in self?.agent.stop() };agent.changed={ [weak self] in self?.refresh() }
+        capture.stopped={ [weak self] in self?.queuedTask=nil;self?.agent.stop() };agent.changed={ [weak self] in self?.refresh() }
         timer=Timer.scheduledTimer(withTimeInterval:1,repeats:true) { [weak self] _ in
             Task { @MainActor in guard let self else{return};self.heartbeat+=1;self.settings.importBootstrap();self.consumeInbox();self.startQueuedIfReady();self.persist() }
         }
@@ -99,6 +100,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         do { try agent.start(prompt,maxSteps:queuedSteps) } catch { agent.event(error.localizedDescription) }
     }
     @objc private func stopTask() { queuedTask=nil;agent.stop() }
+    @objc private func startSharing() {view.endEditing(true);capture.present()}
     @objc private func stopSharing() { queuedTask=nil;agent.stop();Task { await capture.stop() } }
     private func refresh() {
         taskInput.isEditable = !agent.running
@@ -112,7 +114,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
     private func persist() {
         PrivateFiles.json("status.json",["version":"1.0.0","session":session,"at":Date().timeIntervalSince1970,"app_state":state,
             "heartbeat":heartbeat,"ble_ready":bluetooth.ready,"ble_secure":bluetooth.secure,"ble_status":bluetooth.status,"hid_acknowledgements":bluetooth.acknowledged,
-            "capture_running":capture.running,"capture_status":capture.status,"capture_events":capture.events,"frame_sequence":capture.frame?.sequence ?? 0,
+            "capture_running":capture.running,"capture_waiting_for_selection":capture.waitingForSelection,"capture_status":capture.status,"capture_events":capture.events,"frame_sequence":capture.frame?.sequence ?? 0,
             "frame_at":capture.frame?.at.timeIntervalSince1970 ?? 0,"background_frames":capture.backgroundFrames,
             "model_configured":!settings.apiKey.isEmpty,"model_calls":model.calls,"scheduler":"iPhone app","capture_source":"ScreenCaptureKit",
             "job":agent.job,"events":agent.events,"queued":queuedTask != nil,"diagnostic_busy":diagnosticBusy])

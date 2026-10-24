@@ -1,5 +1,58 @@
 import Foundation
 import CoreGraphics
+import Vision
+
+enum ScreenText {
+    enum CalculatorReading {case zero,occupied,unreadable}
+    static func read(_ image: CGImage, normalized rect: CGRect) throws -> [String] {
+        let pixels=CGRect(x:rect.minX*Double(image.width),y:rect.minY*Double(image.height),width:rect.width*Double(image.width),height:rect.height*Double(image.height)).integral
+        guard let cropped=image.cropping(to:pixels) else{return []}
+        let request=VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages=["en-US"]
+        request.minimumTextHeight=0.01
+        try VNImageRequestHandler(cgImage:cropped,options:[:]).perform([request])
+        return (request.results ?? []).map {
+            // Uncertain extra text must deny entry, not disappear from the
+            // result and leave a misleading single zero behind.
+            guard let candidate=$0.topCandidates(1).first,candidate.confidence>=0.75 else{return "<uncertain>"}
+            return candidate.string.trimmingCharacters(in:.whitespacesAndNewlines)
+        }
+    }
+    static func calculatorReading(_ lines: [String]) -> CalculatorReading {
+        if lines==["0"] {return .zero}
+        let known=lines.filter{$0 != "<uncertain>"}
+        if known.count>1 || known.contains(where:{$0 != "0"}) {return .occupied}
+        return .unreadable
+    }
+}
+
+enum FrameTiming {
+    static func capturedAt(received: Date, hostAge: Double) -> Date? {
+        guard hostAge.isFinite, hostAge >= -0.05, hostAge < 5 else {return nil}
+        return received.addingTimeInterval(-max(0,hostAge))
+    }
+    static func accepts(at: Date, sequence: Int, now: Date, after: Int?, notBefore: Date?) -> Bool {
+        let age=now.timeIntervalSince(at)
+        return age >= -0.05 && age < 4 && (after == nil || sequence > after!) && (notBefore == nil || at >= notBefore!)
+    }
+}
+
+enum MouseStep {
+    static func units(dx: Double, dy: Double, width: Double, acceleration: Double, reversed: Bool) -> (Int,Int) {
+        let distance=hypot(dx,dy)
+        guard distance.isFinite,distance>0,width>0 else{return (0,0)}
+        let logical=distance*430/width/max(0.5,acceleration)
+        // Fine movements must stay small even when the previous large move had
+        // a different acceleration. A reversal is a reason to slow down.
+        let cap = distance < width*0.16 ? (reversed ? 3.0 : 6.0) : 30.0
+        let units=min(cap,max(1,(-0.25+sqrt(0.0625+0.28*logical))/0.14*0.65))
+        var x=Int((units*dx/distance).rounded()),y=Int((units*dy/distance).rounded())
+        if x==0 && y==0 {if abs(dx)>=abs(dy){x=dx>0 ? 1 : -1}else{y=dy>0 ? 1 : -1}}
+        return (x,y)
+    }
+}
 
 enum CursorVision {
     static func pixels(_ image: CGImage) -> [UInt8]? {

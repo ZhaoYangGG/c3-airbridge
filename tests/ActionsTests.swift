@@ -29,6 +29,26 @@ import Foundation
         let search=try Actions.key("SEARCH")
         precondition(search["op"] as? String=="consumer" && search["usage"] as? Int==545);checks+=1
         expectRejected(["action":"key","key":"SEARCH","modifiers":["CMD"]])
+        let ready: [String:Any]=["allowed":true,"input_ready":true,"app_kind":"calculator","current_value":"0","expression_empty":true,"evidence":"Display 0, no pending expression","input_rect":[0.05,0.2,0.9,0.2]]
+        precondition(EntryCheck.allows(ready));checks+=1
+        for value in ["0.27","0.","27+58",""] {
+            var reply=ready;reply["current_value"]=value
+            precondition(!EntryCheck.allows(reply));checks+=1
+        }
+        for key in ["expression_empty","input_ready","allowed"] {
+            var reply=ready;reply[key]=false
+            precondition(!EntryCheck.allows(reply));checks+=1
+        }
+        var malformed=ready;malformed["allowed"]=1
+        precondition(!EntryCheck.allows(malformed));checks+=1
+        malformed=ready;malformed["input_rect"]=[0.5,0.2,0.2,0.1]
+        precondition(!EntryCheck.allows(malformed));checks+=1
+        malformed=ready;malformed["input_rect"]=[0.05,0.9,0.9,0.2]
+        precondition(!EntryCheck.allows(malformed));checks+=1
+        malformed=ready;malformed["app_kind"]="other"
+        precondition(!EntryCheck.allows(malformed));checks+=1
+        let searchReady: [String:Any]=["allowed":true,"input_ready":true,"app_kind":"search","evidence":"Empty search field with caret"]
+        precondition(EntryCheck.allows(searchReady));checks+=1
         print("Passed \(checks) action validation checks")
     }
 }
