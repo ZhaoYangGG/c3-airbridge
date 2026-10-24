@@ -18,7 +18,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
     func sceneDidEnterBackground(_ scene: UIScene) { controller?.state="background" }
 }
 
-@MainActor final class AgentController: UIViewController {
+@MainActor final class AgentController: UIViewController, UITextFieldDelegate, UITextViewDelegate {
     private let settings=Settings()
     private let bluetooth=Bluetooth()
     private let capture=Capture()
@@ -31,6 +31,9 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
     private let decisionKeyInput=UITextField()
     private let decisionEndpointInput=UITextField()
     private let decisionModelInput=UITextField()
+    private let scroll=UIScrollView()
+    private var pasteControls: [UIPasteControl]=[]
+    private var viewportHeight: CGFloat=0
     private var configurationFields: [UITextField] { [decisionEndpointInput,decisionModelInput,decisionKeyInput,endpointInput,modelInput,keyInput] }
     private let status=UILabel()
     private let progress=UILabel()
@@ -45,11 +48,13 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
 
     override func viewDidLoad() {
         super.viewDidLoad();settings.importBootstrap();view.backgroundColor = .systemBackground
-        let scroll=UIScrollView();scroll.translatesAutoresizingMaskIntoConstraints=false;view.addSubview(scroll)
+        scroll.translatesAutoresizingMaskIntoConstraints=false
+        scroll.keyboardDismissMode = .interactive
+        view.addSubview(scroll)
         let stack=UIStackView();stack.axis = .vertical;stack.spacing=16;stack.translatesAutoresizingMaskIntoConstraints=false;scroll.addSubview(stack)
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.leadingAnchor),scroll.trailingAnchor.constraint(equalTo:view.safeAreaLayoutGuide.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo:view.safeAreaLayoutGuide.topAnchor),scroll.bottomAnchor.constraint(equalTo:view.bottomAnchor),
+            scroll.topAnchor.constraint(equalTo:view.safeAreaLayoutGuide.topAnchor),scroll.bottomAnchor.constraint(equalTo:view.keyboardLayoutGuide.topAnchor),
             stack.leadingAnchor.constraint(equalTo:scroll.contentLayoutGuide.leadingAnchor,constant:22),stack.trailingAnchor.constraint(equalTo:scroll.contentLayoutGuide.trailingAnchor,constant:-22),
             stack.topAnchor.constraint(equalTo:scroll.contentLayoutGuide.topAnchor,constant:18),stack.bottomAnchor.constraint(equalTo:scroll.contentLayoutGuide.bottomAnchor,constant:-30),
             stack.widthAnchor.constraint(equalTo:scroll.frameLayoutGuide.widthAnchor,constant:-44)])
@@ -58,6 +63,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         status.numberOfLines=0;status.font = .monospacedSystemFont(ofSize:14,weight:.medium);stack.addArrangedSubview(status)
         taskInput.text="打开计算器，计算 12+34，确认结果是 46。";taskInput.font = .systemFont(ofSize:18);taskInput.backgroundColor = .secondarySystemBackground;taskInput.layer.cornerRadius=14
         taskInput.accessibilityLabel="任务内容";taskInput.heightAnchor.constraint(equalToConstant:110).isActive=true;stack.addArrangedSubview(taskInput)
+        taskInput.delegate=self;taskInput.inputAccessoryView=editingToolbar()
         let start=button("开始任务",#selector(startTask));start.configuration = .filled();start.configuration?.title="开始任务";stack.addArrangedSubview(start)
         let row=UIStackView(arrangedSubviews:[button("停止任务",#selector(stopTask)),button("连接 C3",#selector(connectBoard)),button("结束共享",#selector(stopSharing))]);row.distribution = .fillEqually;stack.addArrangedSubview(row)
         stack.addArrangedSubview(button("开始屏幕共享",#selector(startSharing)))
@@ -68,13 +74,15 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         decisionEndpointInput.text=settings.decisionBaseURL;decisionEndpointInput.placeholder="决策 API Base URL（HTTPS）";decisionEndpointInput.keyboardType = .URL
         decisionModelInput.text=settings.decisionModel;decisionModelInput.placeholder="决策模型名称"
         decisionKeyInput.placeholder=settings.decisionAPIKey.isEmpty ? "决策 API Key" : "决策 Key 已保存；填写可替换";decisionKeyInput.isSecureTextEntry=true
-        for field in [decisionEndpointInput,decisionModelInput,decisionKeyInput] { field.borderStyle = .roundedRect;field.autocapitalizationType = .none;field.autocorrectionType = .no;stack.addArrangedSubview(field) }
+        decisionKeyInput.accessibilityLabel="决策 API Key"
+        for field in [decisionEndpointInput,decisionModelInput,decisionKeyInput] { addConfigurationField(field,to:stack) }
         let configTitle=UILabel();configTitle.text="辅助视觉模型";configTitle.font = .boldSystemFont(ofSize:20);stack.addArrangedSubview(configTitle)
         let visionHelp=UILabel();visionHelp.text="负责鼠标定位、输入检查与结果验证，需支持图像和 JSON 输出。可与决策模型使用不同服务；两个角色也可手动配置相同服务，前提是该模型兼容两种请求。旧版配置保留在这里。";visionHelp.numberOfLines=0;visionHelp.font = .systemFont(ofSize:13);stack.addArrangedSubview(visionHelp)
         endpointInput.text=settings.baseURL;endpointInput.placeholder="HTTPS API Base URL";endpointInput.keyboardType = .URL
         modelInput.text=settings.model;modelInput.placeholder="模型名称"
         keyInput.placeholder=settings.apiKey.isEmpty ? "API Key" : "API Key 已安全保存；填写可替换";keyInput.isSecureTextEntry=true
-        for field in [endpointInput,modelInput,keyInput] { field.borderStyle = .roundedRect;field.autocapitalizationType = .none;field.autocorrectionType = .no;stack.addArrangedSubview(field) }
+        keyInput.accessibilityLabel="辅助视觉 API Key"
+        for field in [endpointInput,modelInput,keyInput] { addConfigurationField(field,to:stack) }
         stack.addArrangedSubview(button("保存模型配置",#selector(saveSettings)))
         let help=UILabel();help.numberOfLines=0;help.font = .systemFont(ofSize:13);help.textColor = .secondaryLabel
         help.text="首次使用：给 C3 供电，完成蓝牙配对；在辅助功能中开启辅助触控与全键盘控制。开始任务后，确认共享整个屏幕，再轻点弹层外的空白区域返回 App，任务会自动开始。保持手机解锁。画面会按任务发送给所配置的模型 API。返回本 App 可停止任务。";stack.addArrangedSubview(help)
@@ -85,6 +93,50 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         }
         refresh()
         if ProcessInfo.processInfo.arguments.contains("--present-picker") { DispatchQueue.main.asyncAfter(deadline:.now()+1) { self.capture.present() } }
+    }
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // The keyboard layout guide also handles the keyboard accessory and
+        // hardware-keyboard bar. Reveal the focused field after its viewport shrinks.
+        if abs(scroll.bounds.height-viewportHeight)>0.5 {
+            viewportHeight=scroll.bounds.height
+            revealFocusedInput(animated:false)
+        }
+    }
+    private func addConfigurationField(_ field: UITextField,to stack: UIStackView) {
+        field.borderStyle = .roundedRect;field.autocapitalizationType = .none;field.autocorrectionType = .no
+        field.delegate=self;field.returnKeyType = .done;field.inputAccessoryView=editingToolbar()
+        field.heightAnchor.constraint(greaterThanOrEqualToConstant:44).isActive=true
+        if field === decisionKeyInput || field === keyInput {
+            field.keyboardType = .asciiCapable
+            let config=UIPasteControl.Configuration();config.displayMode = .iconAndLabel;config.cornerStyle = .capsule
+            let paste=UIPasteControl(configuration:config);paste.target=field
+            paste.accessibilityLabel="粘贴\(field.accessibilityLabel ?? "API Key")"
+            paste.setContentHuggingPriority(.required,for:.horizontal)
+            paste.setContentCompressionResistancePriority(.required,for:.horizontal)
+            field.setContentCompressionResistancePriority(.defaultLow,for:.horizontal)
+            pasteControls.append(paste)
+            let row=UIStackView(arrangedSubviews:[field,paste]);row.axis = .horizontal;row.spacing=8;row.alignment = .center
+            stack.addArrangedSubview(row)
+        } else { stack.addArrangedSubview(field) }
+    }
+    private func editingToolbar() -> UIToolbar {
+        let toolbar=UIToolbar();toolbar.sizeToFit()
+        toolbar.items=[UIBarButtonItem(systemItem:.flexibleSpace),UIBarButtonItem(title:"完成",style:.prominent,target:self,action:#selector(dismissKeyboard))]
+        return toolbar
+    }
+    @objc private func dismissKeyboard() {view.endEditing(true)}
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {textField.resignFirstResponder();return true}
+    func textFieldDidBeginEditing(_ textField: UITextField) {revealAfterLayout()}
+    func textViewDidBeginEditing(_ textView: UITextView) {revealAfterLayout()}
+    private func revealAfterLayout() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else{return};self.view.layoutIfNeeded();self.revealFocusedInput(animated:true)
+        }
+    }
+    private func revealFocusedInput(animated: Bool) {
+        guard let input=([taskInput] as [UIView]+configurationFields).first(where:{$0.isFirstResponder}) else{return}
+        scroll.scrollRectToVisible(input.convert(input.bounds,to:scroll).insetBy(dx:0,dy:-16),animated:animated)
     }
     private func button(_ title: String,_ action: Selector) -> UIButton {
         let button=UIButton(type:.system);button.setTitle(title,for:.normal);button.addTarget(self,action:action,for:.touchUpInside);button.heightAnchor.constraint(greaterThanOrEqualToConstant:42).isActive=true;return button
@@ -122,6 +174,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         taskInput.isSelectable = !agent.running
         taskInput.isUserInteractionEnabled = !agent.running
         for field in configurationFields { field.isEnabled = !agent.running }
+        for paste in pasteControls { paste.isEnabled = !agent.running }
         status.text="\(bluetooth.status)\n\(capture.status)\n决策\(settings.decisionAPIKey.isEmpty ? "未配置" : "已配置") · 辅助视觉\(settings.apiKey.isEmpty ? "未配置" : "已配置")"
         progress.text="\(agent.job["state"] as? String ?? "就绪") · 第 \(agent.job["step"] as? Int ?? 0) 步\n\(agent.job["result"] as? String ?? "")"
         logs.text=agent.events.filter{$0["internal"] as? Bool != true}.suffix(6).compactMap{$0["text"] as? String}.joined(separator:"\n");persist()
