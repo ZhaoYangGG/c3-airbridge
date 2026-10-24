@@ -182,7 +182,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
     private func persist() {
         PrivateFiles.json("status.json",["version":"1.1.0","build":Bundle.main.object(forInfoDictionaryKey:"CFBundleVersion") as? String ?? "unknown","session":session,"at":Date().timeIntervalSince1970,"app_state":state,
             "heartbeat":heartbeat,"ble_ready":bluetooth.ready,"ble_secure":bluetooth.secure,"ble_status":bluetooth.status,"hid_acknowledgements":bluetooth.acknowledged,
-            "capture_running":capture.running,"capture_waiting_for_selection":capture.waitingForSelection,"capture_status":capture.status,"capture_events":capture.events,"frame_sequence":capture.frame?.sequence ?? 0,
+            "capture_running":capture.running,"capture_waiting_for_selection":capture.waitingForSelection,"capture_status":capture.status,"capture_events":capture.events,"capture_diagnostics":capture.diagnostics,"frame_sequence":capture.frame?.sequence ?? 0,
             "frame_at":capture.frame?.at.timeIntervalSince1970 ?? 0,"background_frames":capture.backgroundFrames,
             "model_configured":!settings.apiKey.isEmpty && !settings.decisionAPIKey.isEmpty,"model_calls":model.calls+agent.decisionModel.calls,
             "decision_calls":agent.decisionModel.calls,"vision_calls":model.calls,"agent_core":"Open-AutoGLM Swift/C3 adaptation",

@@ -100,7 +100,9 @@ Qwen 型号发送 `enable_thinking=false`，用于逐步 GUI 操作的低延迟�
 | finish | 触发旧有独立当前截图完成验证 | 模型声明或 HID ACK 均不是成功依据 |
 
 显式 C3 扩展：`do(action="Key", key="SEARCH", modifiers=[])` 与
-`do(action="Scroll", wheel=-3)`。这两项是适配扩展，不是上游标准动作。
+`do(action="Scroll", wheel=-3)`，以及 `do(action="Clear")`。
+Clear 先独立检查可见的搜索/文本字段焦点，再发送 Command+A、Backspace；
+不能用于计算器。下一次 Type 仍需检查清空结果。这些是适配扩展，不是上游标准动作。
 完整能力提示位于 `ios/C3Agent/AgentPrompt.txt`，避免把 Android/WDA 的
 自动清空、直接启动等假设带入当前设备。
 
@@ -111,7 +113,12 @@ job.metrics 记录每一步 total_seconds、decision_seconds、vision_seconds �
 execution_seconds_including_pointer_vision。执行阶段可能调用辅助视觉，
 所以最后一项与 vision_seconds 有重叠，不能直接相加。
 
-本轮不调整原有鼠标加速度和定位等待策略。框架更换不代表点击必然提速。
+鼠标归位已到边界时可能没有新像素，归位阶段不再强制等待一次自发重绘；
+第一次向外移动仍必须取得移动后的新帧。到达目标后也移除了重复等待，
+点击前仍检查新鲜度与页面变化。没有改动固件和相对鼠标加速度算法。
+辅助 JSON 输出截断或不是有效对象时最多重试一次，重试增加输出额度；
+无效输出不会变成动作，HTTP/网络错误仍停止。异常响应只留在手机私有诊断。
+框架更换不代表点击必然提速。
 后续必须在同一手机、同一取屏与输入链路上，对照任务成功率和这些耗时。
 
 离线测试覆盖原生动作、C3 能力映射、恶意/截断动作、SSE 分片、完整目标

@@ -1,6 +1,30 @@
 import Foundation
 import CoreGraphics
 
+enum VisionReplyError: LocalizedError {
+    case truncated, malformed
+    var errorDescription: String? {
+        switch self {
+        case .truncated: return "辅助视觉输出被截断，格式重试后仍未恢复"
+        case .malformed: return "辅助视觉未返回有效 JSON 对象，格式重试后仍未恢复"
+        }
+    }
+}
+
+enum VisionReply {
+    static func parse(_ raw: String, finishReason: String?) throws -> [String:Any] {
+        if finishReason == "length" {throw VisionReplyError.truncated}
+        var text=raw.trimmingCharacters(in:.whitespacesAndNewlines)
+        if text.hasPrefix("```json\n") || text.hasPrefix("```\n") {
+            guard text.hasSuffix("```") else {throw VisionReplyError.malformed}
+            text=text.components(separatedBy:"\n").dropFirst().dropLast().joined(separator:"\n")
+        }
+        guard let value=try? JSONSerialization.jsonObject(with:Data(text.utf8)),
+              let object=value as? [String:Any] else {throw VisionReplyError.malformed}
+        return object
+    }
+}
+
 enum QwenRequestPolicy {
     // These hosted hybrid models default to long reasoning. Per-step GUI
     // decisions and JSON vision checks use direct responses as the baseline.
@@ -28,19 +52,27 @@ enum QwenRequestPolicy {
                                   "max_tokens": maxTokens, "temperature": 0.1,
                                   "response_format": ["type": "json_object"]]
         if QwenRequestPolicy.directResponse(base,model:settings.model) { body["enable_thinking"] = false }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        calls += 1; let started = Date(); defer { seconds += Date().timeIntervalSince(started) }
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw AgentError.message("模型请求失败 HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        let started = Date(); defer { seconds += Date().timeIntervalSince(started) }
+        for attempt in 0..<2 {
+            // Retry malformed/truncated observations once. Never execute or infer
+            // an action from partial output; transport and HTTP errors still stop.
+            body["max_tokens"] = attempt == 0 ? maxTokens : max(800,maxTokens)
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            calls += 1
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                throw AgentError.message("模型请求失败 HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+            }
+            let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard let choice = (root?["choices"] as? [[String: Any]])?.first,
+                  let message = choice["message"] as? [String: Any], let raw = message["content"] as? String else { throw AgentError.message("模型返回格式不正确") }
+            do {return try VisionReply.parse(raw,finishReason:choice["finish_reason"] as? String)}
+            catch let error as VisionReplyError {
+                PrivateFiles.json("vision-response-error.json",["finish_reason":choice["finish_reason"] ?? "unknown","content":String(raw.prefix(8000)),"attempt":attempt+1,"max_tokens":body["max_tokens"]!])
+                if attempt == 1 {throw error}
+            }
         }
-        let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let choice = (root?["choices"] as? [[String: Any]])?.first,
-              let message = choice["message"] as? [String: Any], let raw = message["content"] as? String else { throw AgentError.message("模型返回格式不正确") }
-        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("```") { text = text.components(separatedBy: "\n").dropFirst().dropLast().joined(separator: "\n") }
-        guard let obj = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { throw AgentError.message("模型没有返回有效动作") }
-        return obj
+        throw VisionReplyError.malformed
     }
     nonisolated static func image(_ jpeg: Data) -> [String: Any] {
         ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + jpeg.base64EncodedString()]]
@@ -123,7 +155,7 @@ enum Actions {
         case "text": _ = try text(obj["text"] as? String ?? "")
         case "scroll": try number("wheel", -10...10); guard (obj["wheel"] as! NSNumber).doubleValue.rounded() == (obj["wheel"] as! NSNumber).doubleValue else { throw AgentError.message("滚轮须为整数") }
         case "wait": try number("seconds", 0...5)
-        case "done", "blocked", "note": break
+        case "done", "blocked", "note", "clear": break
         default: throw AgentError.message("不支持的模型动作")
         }
     }

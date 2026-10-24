@@ -12,6 +12,11 @@ struct Frame {
     var height: Int { image.height }
 }
 
+struct FrameWaitError: LocalizedError {
+    let context: String
+    var errorDescription: String? {"未收到新画面（\(context)），任务已停止以避免误操作"}
+}
+
 @MainActor final class Capture: NSObject, @preconcurrency SCContentSharingPickerObserver, @preconcurrency SCStreamDelegate, @preconcurrency SCStreamOutput {
     private var stream: SCStream?
     private var presenting = false
@@ -29,6 +34,9 @@ struct Frame {
     private(set) var status = "等待屏幕共享"
     private(set) var backgroundFrames = 0
     private(set) var events: [[String: Any]] = []
+    private(set) var diagnostics: [String:Any] = [:]
+    private var sampleCount=0
+    private var frameStatuses: [Int:Int] = [:]
     var changed: (() -> Void)?
     var stopped: (() -> Void)?
     override init() { super.init(); SCContentSharingPicker.shared.add(self) }
@@ -87,9 +95,14 @@ struct Frame {
         status = "屏幕共享已停止"; stopped?(); changed?()
     }
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard self.stream === stream, type == .screen, sampleBuffer.isValid,
+        guard self.stream === stream, type == .screen else{return}
+        sampleCount+=1;diagnostics["callbacks"]=sampleCount;diagnostics["last_callback_at"]=Date().timeIntervalSince1970
+        guard sampleBuffer.isValid,
               let info=(CMSampleBufferGetSampleAttachmentsArray(sampleBuffer,createIfNecessary:false) as? [[SCStreamFrameInfo:Any]])?.first,
-              let raw=info[.status] as? Int,raw==SCFrameStatus.complete.rawValue,
+              let raw=info[.status] as? Int else {diagnostics["last_drop"]="invalid sample or metadata";return}
+        frameStatuses[raw,default:0]+=1
+        diagnostics["statuses"]=Dictionary(uniqueKeysWithValues:frameStatuses.map{(String($0.key),$0.value)})
+        guard raw==SCFrameStatus.complete.rawValue,
               let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let received=Date()
         let displayed: CMTime
@@ -97,8 +110,12 @@ struct Frame {
             displayed=CMClockMakeHostTimeFromSystemUnits(mach.uint64Value)
         } else {displayed=CMSampleBufferGetPresentationTimeStamp(sampleBuffer)}
         let hostAge=CMTimeGetSeconds(CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()),displayed))
-        guard let captured=FrameTiming.capturedAt(received:received,hostAge:hostAge) else{return}
-        if let prior=pending?.at ?? frame?.at,captured<=prior {return}
+        diagnostics["last_display_age"]=hostAge.isFinite ? hostAge : -1
+        let ptsAge=CMTimeGetSeconds(CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()),CMSampleBufferGetPresentationTimeStamp(sampleBuffer)))
+        diagnostics["last_pts_age"]=ptsAge.isFinite ? ptsAge : -1
+        guard let captured=FrameTiming.capturedAt(received:received,hostAge:hostAge) else{diagnostics["last_drop"]="display time outside freshness bounds";return}
+        if let prior=pending?.at ?? frame?.at,captured<=prior {diagnostics["last_drop"]="non-increasing display time";return}
+        diagnostics["last_drop"]="none"
         pending=(pixels,captured,generation)
         guard frameTask==nil else{return}
         let revision=generation
@@ -124,7 +141,7 @@ struct Frame {
             try? data.write(to: PrivateFiles.root.appendingPathComponent("latest.jpg"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         }
     }
-    func snapshot(after sequence: Int? = nil, notBefore: Date? = nil, timeout: Double = 5) async throws -> Frame {
+    func snapshot(after sequence: Int? = nil, notBefore: Date? = nil, timeout: Double = 5, context: String = "观察屏幕") async throws -> Frame {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             try Task.checkCancellation()
@@ -132,6 +149,7 @@ struct Frame {
             if let frame,FrameTiming.accepts(at:frame.at,sequence:frame.sequence,now:Date(),after:sequence,notBefore:notBefore) {return frame}
             try await Task.sleep(for: .milliseconds(80))
         }
-        throw AgentError.message("未收到新画面，任务已停止以避免误操作")
+        diagnostics["last_wait_timeout"]=context
+        throw FrameWaitError(context:context)
     }
 }

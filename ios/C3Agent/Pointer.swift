@@ -17,14 +17,16 @@ import UniformTypeIdentifiers
         let issued=Date()
         try await bluetooth.send(["op": "move", "x": -3, "y": -3])
         try await bluetooth.send(["op": "move", "x": 3, "y": 3])
-        return try await capture.snapshot(after: old,notBefore:max(notBefore ?? issued,issued))
+        return try await capture.snapshot(after: old,notBefore:max(notBefore ?? issued,issued),context:"轻移唤醒观察")
     }
     private func moved(_ command: [String: Any]) async throws -> Frame {
         let old = capture.frame?.sequence ?? 0
         let barrier=Date()
+        trace?("鼠标下发移动 \(command["x"] ?? 0),\(command["y"] ?? 0)，等待第 \(old) 帧之后的画面")
         try await bluetooth.send(command)
         try await Task.sleep(for: .milliseconds(550))
-        return try await capture.snapshot(after: old,notBefore:barrier)
+        do {return try await capture.snapshot(after: old,notBefore:barrier,context:"鼠标移动后观察")}
+        catch is FrameWaitError {throw AgentError.message("无法可靠定位鼠标：移动已回执，但没有收到移动后的新画面")}
     }
     private func locate(_ baseline: Frame, _ frame: Frame, _ expected: CGPoint?) async throws -> CGPoint {
         try? baseline.jpeg.write(to: PrivateFiles.root.appendingPathComponent("pointer-before.jpg"), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -80,11 +82,18 @@ import UniformTypeIdentifiers
         return answer["hovered"] as? Bool == true
     }
     func goto(_ x: Double, _ y: Double) async throws -> Frame {
+        // This is a BEFORE reference for difference detection, not evidence of
+        // the pointer's current position. Rehoming an already-homed pointer can
+        // produce no new pixels, so requiring a post-home frame deadlocks here.
+        // The first outbound move below must still supply a fresh AFTER frame.
+        let beforeHome = try await observe()
         try await bluetooth.send(["op": "release"])
         let homed=Date()
         for _ in 0..<4 { try await bluetooth.send(["op":"move","x":-127,"y":-127]);try await Task.sleep(for:.milliseconds(120)) }
         try await Task.sleep(for:.milliseconds(300))
-        let baseline = try await capture.snapshot(notBefore:homed)
+        let baseline: Frame
+        if let fresh=capture.frame,fresh.at>=homed,Date().timeIntervalSince(fresh.at)<2 {baseline=fresh}
+        else {baseline=beforeHome}
         let w = Double(baseline.width), h = Double(baseline.height)
         let target = CGPoint(x: x*w, y: y*h)
         let first = try await moved(["op": "move", "x": 30, "y": 30])
@@ -103,7 +112,9 @@ import UniformTypeIdentifiers
             if crossing && abs(target.x-position.x) < max(9,w*0.024) { crossing = false }
             let waypoint = crossing ? CGPoint(x:target.x,y:crossingY) : target
             let dx = waypoint.x-position.x, dy = waypoint.y-position.y, distance = hypot(dx, dy)
-            if distance < max(9, w*0.024) { _ = try await capture.snapshot(); return latest }
+            // click()/swipe() perform the final fresh-screen check. Waiting
+            // here for an unrelated spontaneous redraw can deadlock at rest.
+            if distance < max(9, w*0.024) { return latest }
             let reversed = dx*lastError.dx+dy*lastError.dy < 0
             let (mx,my) = MouseStep.units(dx:dx,dy:dy,width:w,acceleration:acceleration,reversed:reversed)
             lastError=CGVector(dx:dx,dy:dy)

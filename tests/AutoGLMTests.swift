@@ -33,6 +33,8 @@ import Foundation
         }
         let key = try action("do(action=\"Key\", key=\"A\", modifiers=[\"CMD\"])")
         precondition(key["key"] as? String == "A"); checks += 1
+        let clear = try action("do(action=\"Clear\")")
+        precondition(clear["action"] as? String == "clear");checks += 1
         let wait = try action("do(action=\"Wait\", duration=\"2 seconds\")")
         precondition(wait["seconds"] as? Double == 2); checks += 1
         for invalid in [

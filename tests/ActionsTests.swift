@@ -49,6 +49,14 @@ import Foundation
         precondition(!EntryCheck.allows(malformed));checks+=1
         let searchReady: [String:Any]=["allowed":true,"input_ready":true,"app_kind":"search","evidence":"Empty search field with caret"]
         precondition(EntryCheck.allows(searchReady));checks+=1
+        for raw in ["{\"visible\":false}","```json\n{\"visible\":false}\n```"] {
+            let reply=try VisionReply.parse(raw,finishReason:"stop")
+            precondition(reply["visible"] as? Bool == false);checks+=1
+        }
+        for (raw,reason) in [("[]","stop"),("null","stop"),("{\"visible\":true}","length"),("{\"visible\":","stop"),("```json\n{}","stop")] {
+            do {_ = try VisionReply.parse(raw,finishReason:reason);fatalError("Accepted invalid vision reply")}
+            catch is VisionReplyError {checks+=1}
+        }
         print("Passed \(checks) action validation checks")
     }
 }

@@ -24,6 +24,7 @@ do(action="Take_over", message="reason human input is required")
 do(action="Interact", message="missing information or choice")
 finish(message="literal visible task result")
 Explicit C3 extensions:
+do(action="Clear")   # Command+A then Backspace, only in a visually focused search/text field
 do(action="Key", key="SEARCH", modifiers=[])
 do(action="Key", key="ENTER", modifiers=[])
 do(action="Scroll", wheel=-3)   # integer -10..10; negative scrolls down
@@ -43,6 +44,12 @@ Capabilities differ from the original device driver:
   Chinese candidate. SPACE may commit Latin pinyin. Inspect the committed Chinese.
   ENTER can SEND a WeChat message; never use ENTER just to select a candidate.
   Newline is unsupported in Type; use a separate Key only when appropriate.
+- When Spotlight retains an old query, prefer Clear over clicking its small X.
+  Clear has an independent focus check and is not permitted in Calculator.
+  Observe an empty intended field before the next Type. For Calculator search,
+  use the ASCII app name Calculator; do not introduce a Chinese IME candidate
+  selection unnecessarily. If the actual desired app icon is already visible
+  with the correct label, tap it directly rather than a keyboard candidate.
 - Home and Back have no verified native C3 command. Use Tap on a visible back
   button or the floating AssistiveTouch menu, then Tap its Home/主屏幕 item.
   CMD+H and in-app CMD+SPACE may do nothing. Do not repeat ineffective shortcuts.
@@ -56,6 +63,8 @@ Execution feedback is authoritative about whether input was sent, NOT whether
 its desired app effect happened. NOT EXECUTED means nothing was clicked/typed.
 Use the next screenshot to verify each outcome. On pointer failure, choose a
 verified keyboard alternative or a different visible target; never assume success.
+Do not repeat a failed tap on Spotlight's clear X: use Clear when its field is
+focused, then re-observe. A reported NOT EXECUTED tap is not progress.
 If consecutive actions make no visible progress, choose another approach or stop.
 Wait for loading before retrying, and never retry a message send blindly.
 

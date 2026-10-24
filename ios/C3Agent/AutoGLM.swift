@@ -73,6 +73,7 @@ struct PhoneDecision {
             let start = try point("start"), end = try point("end")
             action = ["action": "swipe", "x": start[0], "y": start[1], "end_x": end[0], "end_y": end[1]]
         case "Type", "Type_Name": action = ["action": "text", "text": try string("text", limit: 160)]
+        case "Clear": action = ["action": "clear"]
         case "Launch":
             let app = try string("app", limit: 100)
             action = ["action": "key", "key": "SEARCH", "execution_note": "Launch(\(app)) is NOT complete. Only the Spotlight search key was sent. Inspect the next screenshot, enter the app name using ASCII/pinyin, select a Chinese candidate if necessary, then tap the actual app icon. Do not report that the app has launched yet."]
