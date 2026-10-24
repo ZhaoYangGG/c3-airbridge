@@ -1,6 +1,16 @@
 import Foundation
 import CoreGraphics
 
+enum QwenRequestPolicy {
+    // These hosted hybrid models default to long reasoning. Per-step GUI
+    // decisions and JSON vision checks use direct responses as the baseline.
+    static func directResponse(_ base: URL, model: String) -> Bool {
+        let host=base.host?.lowercased() ?? ""
+        guard host == "maas.qianwenaiapi.com" || host == "dashscope.aliyuncs.com" || host.hasSuffix(".aliyuncs.com") else{return false}
+        return ["qwen3.8-max","qwen3.8-flash","qwen3.7-plus","qwen3.7-max","qwen3.6-plus","qwen3.6-flash","qwen3.5-plus","qwen3.5-flash"].contains { model.lowercased() == $0 || model.lowercased().hasPrefix($0+"-") }
+    }
+}
+
 @MainActor final class Model {
     let settings: Settings
     private(set) var calls = 0
@@ -17,7 +27,7 @@ import CoreGraphics
         var body: [String: Any] = ["model": settings.model, "messages": messages,
                                   "max_tokens": maxTokens, "temperature": 0.1,
                                   "response_format": ["type": "json_object"]]
-        if base.host?.hasSuffix("aliyuncs.com") == true { body["enable_thinking"] = false }
+        if QwenRequestPolicy.directResponse(base,model:settings.model) { body["enable_thinking"] = false }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         calls += 1; let started = Date(); defer { seconds += Date().timeIntervalSince(started) }
         let (data, response) = try await URLSession.shared.data(for: request)

@@ -67,6 +67,20 @@ Key 留空，由用户自行填写，也可替换整个服务地址与模型名�
 辅助视觉保留旧 URL、模型和 Keychain 账号，不自动把旧 Key 复制到决策服务。
 运行任务时禁止通过配置页面或开发 bootstrap 修改模型配置。
 
+### 千问官方端点的首轮配置建议
+
+用户当前端点为 `https://maas.qianwenaiapi.com/compatible-mode/v1`，
+与[千问官方兼容接口文档](https://platform.qianwenai.com/docs/api-reference/toolkitframework/openai-compatible/overview)一致。
+建议先对照 **qwen3.8-max 决策 + qwen3.8-flash 辅助视觉**；辅助定位或读数
+不稳时，用 qwen3.7-plus 做质量对照。该选择依据公开模态/能力定位，尚不是
+本手机的实机排名。两栏均须填写对应服务的 Key，不由开发工具导入凭据。
+
+按[官方思考模式文档](https://platform.qianwenai.com/docs/developer-guides/text-generation/thinking)，
+这些模型默认开启思考。当前 App 对已识别的千问官方端点与已知混合模式
+Qwen 型号发送 `enable_thinking=false`，用于逐步 GUI 操作的低延迟基线。
+辅助 JSON 请求也走同一策略；不向 AutoGLM 或未知供应商擅自添加该参数。
+不要使用 auto 路由做验收，以免实际模型或模态变化导致结果不可比较。
+
 ## 动作兼容表
 
 | 上游动作 | 当前 Swift/C3 行为 | 差异/限制 |

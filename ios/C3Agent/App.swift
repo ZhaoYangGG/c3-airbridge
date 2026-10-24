@@ -127,7 +127,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         logs.text=agent.events.filter{$0["internal"] as? Bool != true}.suffix(6).compactMap{$0["text"] as? String}.joined(separator:"\n");persist()
     }
     private func persist() {
-        PrivateFiles.json("status.json",["version":"1.1.0","session":session,"at":Date().timeIntervalSince1970,"app_state":state,
+        PrivateFiles.json("status.json",["version":"1.1.0","build":Bundle.main.object(forInfoDictionaryKey:"CFBundleVersion") as? String ?? "unknown","session":session,"at":Date().timeIntervalSince1970,"app_state":state,
             "heartbeat":heartbeat,"ble_ready":bluetooth.ready,"ble_secure":bluetooth.secure,"ble_status":bluetooth.status,"hid_acknowledgements":bluetooth.acknowledged,
             "capture_running":capture.running,"capture_waiting_for_selection":capture.waitingForSelection,"capture_status":capture.status,"capture_events":capture.events,"frame_sequence":capture.frame?.sequence ?? 0,
             "frame_at":capture.frame?.at.timeIntervalSince1970 ?? 0,"background_frames":capture.backgroundFrames,

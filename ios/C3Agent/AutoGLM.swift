@@ -77,6 +77,7 @@ struct PhoneDecision {
             let app = try string("app", limit: 100)
             action = ["action": "key", "key": "SEARCH", "execution_note": "Launch(\(app)) is NOT complete. Only the Spotlight search key was sent. Inspect the next screenshot, enter the app name using ASCII/pinyin, select a Chinese candidate if necessary, then tap the actual app icon. Do not report that the app has launched yet."]
         case "Wait":
+            guard fields["duration"] == nil || fields["duration"] is String else { throw AgentError.message("等待时长须为字符串，例如 2 seconds") }
             let duration = (fields["duration"] as? String ?? "1 seconds").replacingOccurrences(of: "seconds", with: "").trimmingCharacters(in: .whitespaces)
             guard let seconds = Double(duration), seconds.isFinite, (0...5).contains(seconds) else { throw AgentError.message("等待时长须为 0–5 seconds") }
             action = ["action": "wait", "seconds": seconds]
@@ -239,7 +240,9 @@ struct PhoneStream {
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["model": model, "messages": messages, "max_tokens": 3000, "temperature": 0.0, "top_p": 0.85, "stream": true])
+        var body: [String:Any] = ["model": model, "messages": messages, "max_tokens": 3000, "temperature": 0.0, "top_p": 0.85, "stream": true]
+        if QwenRequestPolicy.directResponse(base,model:model) {body["enable_thinking"]=false}
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         return request
     }
     func ask(_ messages: [[String: Any]]) async throws -> String {

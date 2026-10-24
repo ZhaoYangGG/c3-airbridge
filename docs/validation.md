@@ -10,10 +10,12 @@
 开发板串口、刷写或发送串口指令。决策与辅助视觉分开配置，Key 由用户自行填写；未读取
 用户 Key 文件，未调用收费模型服务。
 
-- 新增 61 项 AutoGLM 动作协议、C3 映射、上下文和模型请求的离线检查通过。
+- 新增 66 项 AutoGLM 动作协议、C3 映射、上下文和模型请求的离线检查通过，
+  包括千问新官方端点的非思考参数与其他模型隔离、错误等待参数拒绝。
 - 原有 37 项动作边界/输入前提、视觉/OCR/帧时序和设备身份隔离检查通过。
 - Xcode 27.1 Debug 与 Release 无签名构建通过。
-- 用户连接手机后，已从已有签名配置构建并原位安装/启动 1.1（build 11）。
+- 用户连接手机后，已从已有签名配置构建并原位安装/启动 1.1（build 12，
+  包含千问新官方端点的非思考模式适配）。
   手机私有状态报告 version=1.1.0、app_state=active、ble_ready=true、
   ble_secure=true、scheduler=iPhone app，说明新版已恢复安全 BLE 连接。
 - 安装后读到 decision_calls=0、vision_calls=0、model_configured=false、

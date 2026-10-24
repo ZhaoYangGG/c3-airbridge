@@ -41,7 +41,7 @@ import Foundation
             "do(action=\"Tap\", element=[True,500])", "do(action=\"Tap\", element=[NaN,500])",
             "do(action=\"Tap\", element=[1e400,500])", "do(action=\"Type\", text=\"你好\")",
             "do(action=\"Type\", text=\"hello\\nthere\")", "do(action=\"Wait\", duration=\"60 seconds\")",
-            "do(action=\"Wait\", duration=\"nan seconds\")", "do(action=\"Home\")", "do(action=\"Back\")",
+            "do(action=\"Wait\", duration=\"nan seconds\")", "do(action=\"Wait\", duration=3)", "do(action=\"Home\")", "do(action=\"Back\")",
             "do(action=\"Call_API\", instruction=\"anything\")", "do(action=\"Shell\", command=\"anything\")",
             "do(action=\"Key\", key=\"A\", modifiers=\"CMD\")", "do(action=\"Scroll\", wheel=2.5)",
             "do(action=\"Tap\", action=\"Type\", element=[500,500])",
@@ -89,6 +89,13 @@ import Foundation
         precondition(request.url?.absoluteString == "https://example.com/v1/chat/completions"); checks += 1
         precondition(body["model"] as? String == "custom-vision-agent" && body["stream"] as? Bool == true && body["response_format"] == nil); checks += 1
         precondition(body["api_key"] == nil && request.value(forHTTPHeaderField:"Authorization") == "Bearer fixture-not-a-real-key"); checks += 1
+        let qwenURL="https://maas.qianwenaiapi.com/compatible-mode/v1"
+        let qwen=try PhoneModel.request(baseURL:qwenURL,model:"qwen3.8-max",key:"fixture",messages:messages)
+        let qwenBody=try JSONSerialization.jsonObject(with:qwen.httpBody!) as! [String:Any]
+        precondition(qwenBody["enable_thinking"] as? Bool == false);checks += 1
+        precondition(QwenRequestPolicy.directResponse(URL(string:qwenURL)!,model:"qwen3.8-flash"));checks += 1
+        precondition(!QwenRequestPolicy.directResponse(URL(string:qwenURL)!,model:"autoglm-phone"));checks += 1
+        precondition(!QwenRequestPolicy.directResponse(URL(string:"https://example.com/v1")!,model:"qwen3.8-max"));checks += 1
         for endpoint in ["http://example.com/v1", "https://user:pass@example.com/v1", "https://example.com/v1?key=x", "https://example.com/v1#fragment"] {
             reject { _ = try PhoneModel.request(baseURL:endpoint,model:"model",key:"fixture",messages:[]) }
         }
