@@ -126,12 +126,32 @@ import UniformTypeIdentifiers
         }
         throw AgentError.message("鼠标定位未收敛，停止点击")
     }
-    func click(_ x: Double, _ y: Double) async throws {
+    func click(_ x: Double, _ y: Double, count: Int = 1, hold: Bool = false) async throws {
         let scene=try await observe()
         _ = try await goto(x, y)
         let current=try await observe()
         guard Agent.similar(scene.image,current.image) else {throw AgentError.message("点击前画面变化，未执行点击")}
-        try await bluetooth.send(["op": "click"])
+        if hold {
+            do {
+                try await bluetooth.send(["op": "press"])
+                // Firmware releases held buttons after 1.5 s idle. Zero motion
+                // keeps this same press alive without changing its position.
+                for _ in 0..<6 {
+                    try await Task.sleep(for: .milliseconds(500))
+                    try await bluetooth.send(["op": "move", "x": 0, "y": 0])
+                }
+                try await bluetooth.send(["op": "release"])
+            } catch {
+                await Task { @MainActor in try? await self.bluetooth.send(["op": "release"]) }.value
+                throw error
+            }
+        } else {
+            try await bluetooth.send(["op": "click"])
+            if count == 2 {
+                try await Task.sleep(for: .milliseconds(100))
+                try await bluetooth.send(["op": "click"])
+            }
+        }
     }
     func swipe(_ x: Double, _ y: Double, _ endX: Double, _ endY: Double) async throws {
         let scene=try await observe()

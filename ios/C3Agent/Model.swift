@@ -4,11 +4,12 @@ import CoreGraphics
 @MainActor final class Model {
     let settings: Settings
     private(set) var calls = 0
+    private(set) var seconds = 0.0
     init(_ settings: Settings) { self.settings = settings }
     func ask(_ messages: [[String: Any]], maxTokens: Int = 800) async throws -> [String: Any] {
         guard !settings.apiKey.isEmpty else { throw AgentError.message("请先配置模型 API Key") }
         guard let base = URL(string: settings.baseURL), base.scheme == "https", base.host != nil,
-              base.user == nil, base.password == nil, base.query == nil else { throw AgentError.message("模型地址必须为 HTTPS") }
+              base.user == nil, base.password == nil, base.query == nil, base.fragment == nil else { throw AgentError.message("辅助视觉模型地址必须为 HTTPS") }
         let url = base.appendingPathComponent("chat/completions")
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = 60
         request.setValue("Bearer " + settings.apiKey, forHTTPHeaderField: "Authorization")
@@ -18,6 +19,7 @@ import CoreGraphics
                                   "response_format": ["type": "json_object"]]
         if base.host?.hasSuffix("aliyuncs.com") == true { body["enable_thinking"] = false }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        calls += 1; let started = Date(); defer { seconds += Date().timeIntervalSince(started) }
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw AgentError.message("模型请求失败 HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
@@ -28,10 +30,9 @@ import CoreGraphics
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.hasPrefix("```") { text = text.components(separatedBy: "\n").dropFirst().dropLast().joined(separator: "\n") }
         guard let obj = try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { throw AgentError.message("模型没有返回有效动作") }
-        calls += 1
         return obj
     }
-    static func image(_ jpeg: Data) -> [String: Any] {
+    nonisolated static func image(_ jpeg: Data) -> [String: Any] {
         ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64," + jpeg.base64EncodedString()]]
     }
 }
@@ -104,7 +105,7 @@ enum Actions {
             guard let value = obj[name] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(), range.contains(value.doubleValue), value.doubleValue.isFinite else { throw AgentError.message("模型动作参数无效: \(name)") }
         }
         switch obj["action"] as? String {
-        case "click": try number("x", 0...1); try number("y", 0...1)
+        case "click", "double_click", "long_press": try number("x", 0...1); try number("y", 0...1)
         case "swipe": for name in ["x", "y", "end_x", "end_y"] { try number(name, 0...1) }
         case "key":
             guard obj["modifiers"] == nil || obj["modifiers"] is [String] else { throw AgentError.message("修饰键须为字符串数组") }
@@ -112,7 +113,7 @@ enum Actions {
         case "text": _ = try text(obj["text"] as? String ?? "")
         case "scroll": try number("wheel", -10...10); guard (obj["wheel"] as! NSNumber).doubleValue.rounded() == (obj["wheel"] as! NSNumber).doubleValue else { throw AgentError.message("滚轮须为整数") }
         case "wait": try number("seconds", 0...5)
-        case "done", "blocked": break
+        case "done", "blocked", "note": break
         default: throw AgentError.message("不支持的模型动作")
         }
     }

@@ -10,6 +10,8 @@ jobs:
           mkdir -p .local
           xcrun swiftc ios/C3Agent/Store.swift ios/C3Agent/Model.swift tests/ActionsTests.swift -o .local/action-tests
           .local/action-tests
+          xcrun swiftc ios/C3Agent/Store.swift ios/C3Agent/Model.swift ios/C3Agent/AutoGLM.swift tests/AutoGLMTests.swift -o .local/autoglm-tests
+          .local/autoglm-tests
           xcrun swiftc ios/C3Agent/Vision.swift tests/VisionTests.swift -o .local/vision-tests
           .local/vision-tests
           python3 tests/test_device_guard.py

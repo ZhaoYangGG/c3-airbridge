@@ -4,6 +4,25 @@
 旧架构的成功计算器任务、转发吞吐和后端测试只适用于
 [legacy-airplay-v0.2](https://github.com/ZhaoYangGG/c3-airbridge/tree/legacy-airplay-v0.2/docs/validation.md)，不计入本版成绩。
 
+## Open-AutoGLM Swift 迁移（本轮）
+
+迁移仅涉及 App、构建检查和说明，未修改固件或取屏/BLE 协议，未打开任何
+开发板串口、刷写或发送串口指令。决策与辅助视觉分开配置，Key 由用户自行填写；未读取
+用户 Key 文件，未调用收费模型服务。
+
+- 新增 61 项 AutoGLM 动作协议、C3 映射、上下文和模型请求的离线检查通过。
+- 原有 37 项动作边界/输入前提、视觉/OCR/帧时序和设备身份隔离检查通过。
+- Xcode 27.1 Debug 与 Release 无签名构建通过。
+- 用户连接手机后，已从已有签名配置构建并原位安装/启动 1.1（build 11）。
+  手机私有状态报告 version=1.1.0、app_state=active、ble_ready=true、
+  ble_secure=true、scheduler=iPhone app，说明新版已恢复安全 BLE 连接。
+- 安装后读到 decision_calls=0、vision_calls=0、model_configured=false、
+  capture_running=false。等待用户自行配置模型和确认共享后才能做真实任务。
+  未将安装或连接成功视为端到端任务成功；新增双击/长按尚待实机验证。
+- 下方原生链路的实机记录属于此前版本，不能当作本轮 Swift 移植的验收。
+
+迁移细节、动作差异与后续耗时对比见 [agent-core.md](agent-core.md)。
+
 ## 当前结论
 
 **原生取屏、模型调用、手机后台调度、手机到 C3 的安全 GATT 指令和 BLE

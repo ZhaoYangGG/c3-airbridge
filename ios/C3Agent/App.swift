@@ -28,13 +28,17 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
     private let keyInput=UITextField()
     private let endpointInput=UITextField()
     private let modelInput=UITextField()
+    private let decisionKeyInput=UITextField()
+    private let decisionEndpointInput=UITextField()
+    private let decisionModelInput=UITextField()
+    private var configurationFields: [UITextField] { [decisionEndpointInput,decisionModelInput,decisionKeyInput,endpointInput,modelInput,keyInput] }
     private let status=UILabel()
     private let progress=UILabel()
     private let logs=UILabel()
     private var timer: Timer?
     private var heartbeat=0
     private var queuedTask: String?
-    private var queuedSteps=24
+    private var queuedSteps=60
     private var diagnosticBusy=false
     var state="launch" { didSet { if state=="active" {consumeInbox()};persist() } }
     private let session=UUID().uuidString
@@ -59,7 +63,14 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         stack.addArrangedSubview(button("开始屏幕共享",#selector(startSharing)))
         progress.numberOfLines=0;progress.font = .systemFont(ofSize:16,weight:.medium);stack.addArrangedSubview(progress)
         logs.numberOfLines=0;logs.font = .monospacedSystemFont(ofSize:12,weight:.regular);logs.textColor = .secondaryLabel;stack.addArrangedSubview(logs)
-        let configTitle=UILabel();configTitle.text="模型配置";configTitle.font = .boldSystemFont(ofSize:20);stack.addArrangedSubview(configTitle)
+        let decisionTitle=UILabel();decisionTitle.text="决策模型";decisionTitle.font = .boldSystemFont(ofSize:20);stack.addArrangedSubview(decisionTitle)
+        let decisionHelp=UILabel();decisionHelp.text="决定下一步操作。可用 AutoGLM，或能读图并输出 AutoGLM 动作协议的其他模型。";decisionHelp.numberOfLines=0;decisionHelp.font = .systemFont(ofSize:13);stack.addArrangedSubview(decisionHelp)
+        decisionEndpointInput.text=settings.decisionBaseURL;decisionEndpointInput.placeholder="决策 API Base URL（HTTPS）";decisionEndpointInput.keyboardType = .URL
+        decisionModelInput.text=settings.decisionModel;decisionModelInput.placeholder="决策模型名称"
+        decisionKeyInput.placeholder=settings.decisionAPIKey.isEmpty ? "决策 API Key" : "决策 Key 已保存；填写可替换";decisionKeyInput.isSecureTextEntry=true
+        for field in [decisionEndpointInput,decisionModelInput,decisionKeyInput] { field.borderStyle = .roundedRect;field.autocapitalizationType = .none;field.autocorrectionType = .no;stack.addArrangedSubview(field) }
+        let configTitle=UILabel();configTitle.text="辅助视觉模型";configTitle.font = .boldSystemFont(ofSize:20);stack.addArrangedSubview(configTitle)
+        let visionHelp=UILabel();visionHelp.text="负责鼠标定位、输入检查与结果验证，需支持图像和 JSON 输出。可与决策模型使用不同服务；两个角色也可手动配置相同服务，前提是该模型兼容两种请求。旧版配置保留在这里。";visionHelp.numberOfLines=0;visionHelp.font = .systemFont(ofSize:13);stack.addArrangedSubview(visionHelp)
         endpointInput.text=settings.baseURL;endpointInput.placeholder="HTTPS API Base URL";endpointInput.keyboardType = .URL
         modelInput.text=settings.model;modelInput.placeholder="模型名称"
         keyInput.placeholder=settings.apiKey.isEmpty ? "API Key" : "API Key 已安全保存；填写可替换";keyInput.isSecureTextEntry=true
@@ -70,7 +81,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         bluetooth.changed={ [weak self] in self?.refresh() };capture.changed={ [weak self] in self?.refresh();self?.startQueuedIfReady() }
         capture.stopped={ [weak self] in self?.queuedTask=nil;self?.agent.stop() };agent.changed={ [weak self] in self?.refresh() }
         timer=Timer.scheduledTimer(withTimeInterval:1,repeats:true) { [weak self] _ in
-            Task { @MainActor in guard let self else{return};self.heartbeat+=1;self.settings.importBootstrap();self.consumeInbox();self.startQueuedIfReady();self.persist() }
+            Task { @MainActor in guard let self else{return};self.heartbeat+=1;if !self.agent.running {self.settings.importBootstrap()};self.consumeInbox();self.startQueuedIfReady();self.persist() }
         }
         refresh()
         if ProcessInfo.processInfo.arguments.contains("--present-picker") { DispatchQueue.main.asyncAfter(deadline:.now()+1) { self.capture.present() } }
@@ -81,6 +92,10 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
     @objc private func connectBoard() { bluetooth.connect() }
     @objc private func saveSettings() {
         guard !agent.running else{return}
+        settings.decisionBaseURL=decisionEndpointInput.text?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
+        settings.decisionModel=decisionModelInput.text?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
+        if let key=decisionKeyInput.text?.trimmingCharacters(in:.whitespacesAndNewlines),!key.isEmpty{settings.decisionAPIKey=key;decisionKeyInput.text=""}
+        decisionKeyInput.placeholder=settings.decisionAPIKey.isEmpty ? "决策 API Key" : "决策 Key 已安全保存"
         settings.baseURL=endpointInput.text?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
         settings.model=modelInput.text?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
         if let key=keyInput.text?.trimmingCharacters(in:.whitespacesAndNewlines),!key.isEmpty{settings.apiKey=key;keyInput.text=""}
@@ -89,7 +104,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
     @objc private func startTask() {
         view.endEditing(true)
         guard !agent.running,!diagnosticBusy else{return}
-        queuedTask=taskInput.text;queuedSteps=24
+        queuedTask=taskInput.text;queuedSteps=60
         if !capture.running { capture.present() } else { startQueuedIfReady() }
     }
     private func startQueuedIfReady() {
@@ -106,17 +121,19 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         taskInput.isEditable = !agent.running
         taskInput.isSelectable = !agent.running
         taskInput.isUserInteractionEnabled = !agent.running
-        for field in [endpointInput,modelInput,keyInput] { field.isEnabled = !agent.running }
-        status.text="\(bluetooth.status)\n\(capture.status) · 模型\(settings.apiKey.isEmpty ? "未配置" : "已配置")"
+        for field in configurationFields { field.isEnabled = !agent.running }
+        status.text="\(bluetooth.status)\n\(capture.status)\n决策\(settings.decisionAPIKey.isEmpty ? "未配置" : "已配置") · 辅助视觉\(settings.apiKey.isEmpty ? "未配置" : "已配置")"
         progress.text="\(agent.job["state"] as? String ?? "就绪") · 第 \(agent.job["step"] as? Int ?? 0) 步\n\(agent.job["result"] as? String ?? "")"
         logs.text=agent.events.filter{$0["internal"] as? Bool != true}.suffix(6).compactMap{$0["text"] as? String}.joined(separator:"\n");persist()
     }
     private func persist() {
-        PrivateFiles.json("status.json",["version":"1.0.0","session":session,"at":Date().timeIntervalSince1970,"app_state":state,
+        PrivateFiles.json("status.json",["version":"1.1.0","session":session,"at":Date().timeIntervalSince1970,"app_state":state,
             "heartbeat":heartbeat,"ble_ready":bluetooth.ready,"ble_secure":bluetooth.secure,"ble_status":bluetooth.status,"hid_acknowledgements":bluetooth.acknowledged,
             "capture_running":capture.running,"capture_waiting_for_selection":capture.waitingForSelection,"capture_status":capture.status,"capture_events":capture.events,"frame_sequence":capture.frame?.sequence ?? 0,
             "frame_at":capture.frame?.at.timeIntervalSince1970 ?? 0,"background_frames":capture.backgroundFrames,
-            "model_configured":!settings.apiKey.isEmpty,"model_calls":model.calls,"scheduler":"iPhone app","capture_source":"ScreenCaptureKit",
+            "model_configured":!settings.apiKey.isEmpty && !settings.decisionAPIKey.isEmpty,"model_calls":model.calls+agent.decisionModel.calls,
+            "decision_calls":agent.decisionModel.calls,"vision_calls":model.calls,"agent_core":"Open-AutoGLM Swift/C3 adaptation",
+            "scheduler":"iPhone app","capture_source":"ScreenCaptureKit",
             "job":agent.job,"events":agent.events,"queued":queuedTask != nil,"diagnostic_busy":diagnosticBusy])
     }
     // App-container inbox is development instrumentation only; release builds
@@ -129,7 +146,7 @@ final class AgentScene: UIResponder, UIWindowSceneDelegate {
         try? FileManager.default.removeItem(at:path);UserDefaults.standard.set(id,forKey:"lastInbox")
         if obj["stop"] as? Bool==true { stopTask();return }
         if let prompt=obj["prompt"] as? String,!agent.running,!diagnosticBusy {
-            taskInput.text=prompt;queuedTask=prompt;queuedSteps=obj["max_steps"] as? Int ?? 24
+            taskInput.text=prompt;queuedTask=prompt;queuedSteps=obj["max_steps"] as? Int ?? 60
             if !capture.running,UIApplication.shared.applicationState == .active{capture.present()}
             startQueuedIfReady()
         } else if let commands=obj["commands"] as? [[String:Any]],!agent.running,!diagnosticBusy,commands.count<=80 {

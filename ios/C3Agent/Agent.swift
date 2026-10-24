@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Open-AutoGLM loop adapted for the existing native iPhone/C3 pipeline.
+// Upstream revision and local changes are documented in THIRD_PARTY.md.
 import Foundation
 import CoreGraphics
 
@@ -5,6 +8,7 @@ import CoreGraphics
     let bluetooth: Bluetooth
     let capture: Capture
     let model: Model
+    let decisionModel: PhoneModel
     let pointer: Pointer
     var changed: (() -> Void)?
     private var runner: Task<Void, Never>?
@@ -15,6 +19,7 @@ import CoreGraphics
     var running: Bool { runner != nil }
     init(_ bluetooth: Bluetooth, _ capture: Capture, _ model: Model) {
         self.bluetooth=bluetooth; self.capture=capture; self.model=model
+        decisionModel=PhoneModel(model.settings)
         pointer=Pointer(bluetooth,capture,model)
         pointer.trace = { [weak self] text in self?.event(text) }
     }
@@ -24,19 +29,22 @@ import CoreGraphics
         if let action { item["action"] = action }
         events.append(item); if events.count > 180 { events.removeFirst(events.count-180) }; changed?()
     }
-    func start(_ prompt: String, maxSteps: Int = 24) throws {
+    func start(_ prompt: String, maxSteps: Int = 60) throws {
         guard !running else { throw AgentError.message("已有任务运行，请先停止") }
         guard (1...2000).contains(prompt.trimmingCharacters(in: .whitespacesAndNewlines).count) else { throw AgentError.message("请输入 1–2000 字任务") }
         guard bluetooth.ready, bluetooth.secure else { throw AgentError.message("请先连接 C3 安全蓝牙") }
         guard capture.running else { throw AgentError.message("请先开始屏幕共享") }
-        guard !model.settings.apiKey.isEmpty else { throw AgentError.message("请先配置模型 API Key") }
+        guard !model.settings.decisionAPIKey.isEmpty else { throw AgentError.message("请先配置决策模型 API Key") }
+        guard !model.settings.apiKey.isEmpty else { throw AgentError.message("请先配置辅助视觉模型 API Key") }
         events=[]
         job=["id": UUID().uuidString, "prompt": prompt, "state": "running", "step": 0,
-             "max_steps": min(40,max(1,maxSteps)), "started_at": Date().timeIntervalSince1970,
+             "max_steps": min(100,max(1,maxSteps)), "started_at": Date().timeIntervalSince1970,
+             "agent_core": "Open-AutoGLM Swift/C3 adaptation", "decision_model": model.settings.decisionModel,
+             "vision_model": model.settings.model,
              "capture_source": "iPhone ScreenCaptureKit", "scheduler": "iPhone app", "input_transport": "iPhone CoreBluetooth GATT → C3 BLE HID"]
-        event("任务已开始，调度运行在手机上")
+        event("任务已开始：Open-AutoGLM 核心由手机调度")
         timedOut=false
-        runner=Task { @MainActor in await self.run(prompt, min(40,max(1,maxSteps))) }
+        runner=Task { @MainActor in await self.run(prompt, min(100,max(1,maxSteps))) }
         deadline=Task { @MainActor in
             do { try await Task.sleep(for:.seconds(900)) } catch { return }
             guard self.running else{return}
@@ -49,30 +57,53 @@ import CoreGraphics
     }
     private func run(_ prompt: String, _ maxSteps: Int) async {
         let started=Date()
-        var history: [[String: Any]]=[]
         var previous="", repeated=0
+        var previousScene: CGImage?
         var pointerFailures=0,verificationFailures=0,entryFailures=0
-        let systemURL=Bundle.main.url(forResource: "AgentPrompt", withExtension: "txt")!
-        let system=(try? String(contentsOf: systemURL, encoding: .utf8)) ?? "Return JSON blocked if instructions unavailable."
+        var protocolFailures=0
+        let systemURL=Bundle.main.url(forResource: "AgentPrompt", withExtension: "txt")
+        let system=systemURL.flatMap { try? String(contentsOf:$0,encoding:.utf8) }
+        var conversation=PhoneConversation(system:system ?? "",task:prompt)
+        var metrics: [[String:Any]]=[]
         do {
+            guard let system,!system.isEmpty else {throw AgentError.message("Agent 能力说明缺失，拒绝执行")}
             for index in 0..<maxSteps {
                 try Task.checkCancellation()
                 guard Date().timeIntervalSince(started) < 900 else { throw AgentError.message("任务达到 15 分钟上限") }
                 guard bluetooth.ready, bluetooth.secure else { throw AgentError.message("C3 连接中断，任务停止") }
                 job["step"]=index+1
+                let stepStarted=Date(), visionBefore=model.seconds, decisionBefore=decisionModel.seconds
+                var executionSeconds=0.0
+                defer {
+                    let measurement: [String:Any] = ["step":index+1,"total_seconds":Date().timeIntervalSince(stepStarted),
+                        "decision_seconds":decisionModel.seconds-decisionBefore,"vision_seconds":model.seconds-visionBefore,
+                        "execution_seconds_including_pointer_vision":executionSeconds]
+                    metrics.append(measurement);job["metrics"]=metrics;changed?()
+                }
                 let frame=try await pointer.observe()
                 try? frame.jpeg.write(to:PrivateFiles.root.appendingPathComponent("decision.jpg"),options:[.atomic,.completeFileProtectionUntilFirstUserAuthentication])
-                let prior=String(data: try JSONSerialization.data(withJSONObject: Array(history.suffix(12)), options: [.sortedKeys]), encoding: .utf8) ?? "[]"
                 event("第 \(index+1) 步：分析当前画面")
-                let action=try await model.ask([
-                    ["role":"system","content":system],
-                    ["role":"user","content":[["type":"text","text":"User task: \(prompt)\nPrevious actions and observations: \(prior)\nDecide the next action from the CURRENT screenshot. Do not repeat a sent message."],Model.image(frame.jpeg)]]
-                ])
-                try Actions.validate(action)
+                let response=try await decisionModel.ask(conversation.messages(frame.jpeg))
+                var instruction=response
+                func record(_ feedback: [String:Any]) { conversation.record(instruction,feedback) }
+                let action: [String:Any]
+                do {
+                    let decision=try PhoneDecision.parse(response)
+                    instruction=decision.instruction
+                    action=try decision.c3Action()
+                    protocolFailures=0
+                } catch {
+                    protocolFailures+=1
+                    record(["execution":"NOT EXECUTED", "error":error.localizedDescription])
+                    event("动作未执行：\(error.localizedDescription)")
+                    guard protocolFailures<3 else{throw AgentError.message("模型连续返回不兼容动作，请检查决策模型的动作协议支持")}
+                    continue
+                }
                 try Task.checkCancellation()
                 guard Date().timeIntervalSince(frame.at) < 70 else { throw AgentError.message("模型响应过慢，画面已过期") }
                 let fingerprint=String(data: try JSONSerialization.data(withJSONObject: action.filter { !["reason","expected"].contains($0.key) }, options: [.sortedKeys]), encoding: .utf8) ?? ""
-                repeated = fingerprint==previous ? repeated+1 : 0; previous=fingerprint
+                repeated = fingerprint==previous && previousScene.map({Self.similar($0,frame.image)}) == true ? repeated+1 : 0
+                previous=fingerprint;previousScene=frame.image
                 guard repeated < 3 else { throw AgentError.message("连续重复动作没有进展，任务停止") }
                 event(action["reason"] as? String ?? action["action"] as? String ?? "动作", action: action)
                 let kind=action["action"] as! String
@@ -83,7 +114,7 @@ import CoreGraphics
                 // Capture is local; image comparison catches a concurrent app/screen change.
                 let current=try await pointer.observe()
                 guard Self.similar(frame.image,current.image) else {
-                    history.append(["proposed":action,"execution":"NOT EXECUTED: screen changed before execution. Do not assume its expected effect happened."])
+                    record(["proposed":action,"execution":"NOT EXECUTED: screen changed before execution. Do not assume its expected effect happened."])
                     event("画面已变化，动作未执行，重新观察后再决策"); continue
                 }
                 if kind=="done" {
@@ -94,7 +125,7 @@ import CoreGraphics
                     try Task.checkCancellation()
                     let verifiedScreen=try await pointer.observe()
                     guard Self.similar(current.image,verifiedScreen.image) else {
-                        history.append(["proposed":action,"execution":"Completion not accepted: screen changed during verification"])
+                        record(["proposed":action,"execution":"Completion not accepted: screen changed during verification"])
                         event("完成校验期间画面变化，继续观察")
                         continue
                     }
@@ -103,7 +134,7 @@ import CoreGraphics
                         job["state"]="done";job["result"]=evidence;event("独立完成校验通过：\(evidence)");break
                     }
                     verificationFailures+=1
-                    history.append(["proposed":action,"execution":"Completion rejected by independent screenshot verification", "observation":evidence])
+                    record(["proposed":action,"execution":"Completion rejected by independent screenshot verification", "observation":evidence])
                     event("完成校验未通过：\(evidence)")
                     guard verificationFailures<3 else{throw AgentError.message("多次完成校验失败，任务停止")}
                     continue
@@ -117,14 +148,14 @@ import CoreGraphics
                     try Task.checkCancellation()
                     if !EntryCheck.allows(check) {
                         entryFailures+=1
-                        history.append(["proposed":action,"execution":"NOT EXECUTED: independent input precondition rejected", "observation":check])
+                        record(["proposed":action,"execution":"NOT EXECUTED: independent input precondition rejected", "observation":check])
                         event("输入前置条件未满足：\(check["evidence"] as? String ?? "无法确认输入状态")")
                         guard entryFailures<4 else{throw AgentError.message("多次无法确认输入前置状态，任务停止")}
                         continue
                     }
                     let fresh=try await pointer.observe()
                     guard Self.similar(current.image,fresh.image) else {
-                        history.append(["proposed":action,"execution":"NOT EXECUTED: input screen changed during preflight"])
+                        record(["proposed":action,"execution":"NOT EXECUTED: input screen changed during preflight"])
                         event("输入核验期间画面变化，重新观察")
                         continue
                     }
@@ -153,7 +184,7 @@ import CoreGraphics
                         try Task.checkCancellation()
                         if !cleared {
                             entryFailures+=1
-                            history.append(["proposed":action,"execution":"NOT EXECUTED: display reading did not confirm a single 0 with no pending expression. Clear again and re-observe."])
+                            record(["proposed":action,"execution":"NOT EXECUTED: display reading did not confirm a single 0 with no pending expression. Clear again and re-observe."])
                             event("显示区域读数未确认已清空，拒绝输入")
                             guard entryFailures<4 else{throw AgentError.message("本地读数核验多次失败，任务停止")}
                             continue
@@ -161,25 +192,31 @@ import CoreGraphics
                         let afterOCR=try await pointer.observe()
                         guard Self.similar(fresh.image,afterOCR.image),
                               CursorVision.changed(fresh.image,afterOCR.image,in:box)<0.001 else {
-                            history.append(["proposed":action,"execution":"NOT EXECUTED: calculator display changed during local OCR"])
+                            record(["proposed":action,"execution":"NOT EXECUTED: calculator display changed during local OCR"])
                             event("本地核验期间读数变化，重新观察")
                             continue
                         }
                     }
                 }
-                do { try await execute(action) }
+                let executionStarted=Date()
+                do { try await execute(action);executionSeconds=Date().timeIntervalSince(executionStarted) }
                 catch {
+                    executionSeconds=Date().timeIntervalSince(executionStarted)
                     let text=error.localizedDescription
-                    if ["click","swipe"].contains(kind),text.hasPrefix("无法可靠定位鼠标") || text.hasPrefix("鼠标定位未收敛") || text.hasPrefix("点击前画面变化") {
+                    if ["click","double_click","long_press","swipe"].contains(kind),text.hasPrefix("无法可靠定位鼠标") || text.hasPrefix("鼠标定位未收敛") || text.hasPrefix("点击前画面变化") {
                         pointerFailures+=1
                         guard pointerFailures<3 else{throw error}
-                        history.append(["proposed":action,"execution":"NOT EXECUTED: \(text); no click/press was sent. Re-observe before choosing a verified alternative."])
+                        record(["proposed":action,"execution":"NOT EXECUTED: \(text); no click/press was sent. Re-observe before choosing a verified alternative."])
                         event("定位失败，点击未执行；重新观察并尝试其他输入方式")
                         continue
                     }
                     throw error
                 }
-                history.append(["performed":action,"execution":"HID command acknowledged; verify its actual effect from the next screenshot. Do not assume the expected outcome."])
+                let feedback: String
+                if kind == "note" {feedback="Note recorded in task history; no device input sent."}
+                else if kind == "wait" {feedback="Wait elapsed; no device input sent. Inspect the next screenshot."}
+                else {feedback=action["execution_note"] as? String ?? "HID command acknowledged; verify its actual effect from the next screenshot. Do not assume the expected outcome."}
+                record(["performed":action,"execution":feedback])
                 try await Task.sleep(for: .milliseconds(700))
             }
             if job["state"] as? String=="running" { job["state"]="blocked";job["result"]="已达到任务步骤上限" }
@@ -198,6 +235,8 @@ import CoreGraphics
         try Actions.validate(action)
         switch action["action"] as? String {
         case "click": try await pointer.click((action["x"] as! NSNumber).doubleValue,(action["y"] as! NSNumber).doubleValue)
+        case "double_click": try await pointer.click((action["x"] as! NSNumber).doubleValue,(action["y"] as! NSNumber).doubleValue,count:2)
+        case "long_press": try await pointer.click((action["x"] as! NSNumber).doubleValue,(action["y"] as! NSNumber).doubleValue,hold:true)
         case "swipe": try await pointer.swipe((action["x"] as! NSNumber).doubleValue,(action["y"] as! NSNumber).doubleValue,(action["end_x"] as! NSNumber).doubleValue,(action["end_y"] as! NSNumber).doubleValue)
         case "key": try await bluetooth.send(Actions.key(action["key"] as! String,action["modifiers"] as? [String] ?? []))
         case "text": for cmd in try Actions.text(action["text"] as! String) { try await bluetooth.send(cmd);try await Task.sleep(for: .milliseconds(100)) }
